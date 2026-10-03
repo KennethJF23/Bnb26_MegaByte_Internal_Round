@@ -1,8 +1,11 @@
 import { useEffect, useRef, useState } from 'react'
 import { IMG } from './assets.js'
+import LivePage from './LivePage.jsx'
+import Login from './Login.jsx'
+import Signup from './Signup.jsx'
 
 /* ---------- content ---------- */
-const NAV = [['Home', '#top'], ['How it works', '#how'], ['Try it', '#demo'], ['FAQ', '#faq']]
+const NAV = [['Home', '#top'], ['How it works', '#how'], ['Preview', '#demo'], ['FAQ', '#faq']]
 const TICKER = 'Misconception diagnosis  ✦  Targeted intervention  ✦  Verified resolution  ✦  Learner model  ✦  Fresh reassessment  ✦  '
 const STEPS = [
   ['01', 'Diagnose', '— the model', 'Reads the learner’s answer, working or code and infers the misconception behind it.', 'var(--sky)', 'var(--brand)'],
@@ -103,7 +106,7 @@ function Nav() {
       <div className={`links ${open ? 'open' : ''}`}>
         {NAV.map(([l, h]) => <a key={l} href={h} className="text-md" onClick={() => setOpen(false)}>{l}</a>)}
       </div>
-      <Btn variant="sm" href="#demo">Try the demo</Btn>
+      <Btn variant="sm" href="#/login">Live demo</Btn>
       <button className="menu-btn" aria-label="Menu" onClick={() => setOpen(!open)}>{open ? '✕' : '☰'}</button>
     </div></nav>
   )
@@ -179,7 +182,7 @@ function Demo() {
 const M_ = (k) => M[k].name
 
 /* ---------- page ---------- */
-export default function App() {
+function Landing() {
   return (
     <div id="top">
       <Nav />
@@ -189,7 +192,7 @@ export default function App() {
             <span className="pretitle">Introductory programming</span>
             <Title tag="h1" words={['Fix', 'the', 'misunderstanding,', 'not', 'just', 'the']} hl="output" />
             <p className="lead">Re:Learn finds the belief behind a learner’s wrong answer, teaches against it, then checks it is truly gone.</p>
-            <div className="btns"><Btn variant="primary" href="#demo">Try the demo</Btn><Btn variant="white" href="#how">How it works</Btn></div>
+            <div className="btns"><Btn variant="primary" href="#/login">Live demo</Btn><Btn variant="white" href="#how">How it works</Btn></div>
           </div>
           <div style={{ position: 'relative' }}>
             <Code lines={CODE[0]} hot={2} />
@@ -240,7 +243,7 @@ export default function App() {
         <span className="pretitle">Learn the why</span><div style={{ height: 14 }} />
         <Title words={['Turn', 'bugs', 'into']} hl="understanding" />
         <p style={{ maxWidth: 600 }}>See the diagnosis, then watch the system confirm the misconception is really gone.</p>
-        <div className="cta-card"><h4>Run the live demo</h4><Btn variant="primary" href="#demo">Start now</Btn></div>
+        <div className="cta-card"><h4>Run the live demo</h4><Btn variant="primary" href="#/login">Start now</Btn></div>
       </div></section>
 
       <footer><div className="container">
@@ -252,4 +255,41 @@ export default function App() {
       </div></footer>
     </div>
   )
+}
+
+/* tiny hash router: auth is required before entering the live-demo page */
+export default function App() {
+  const [hash, setHash] = useState(window.location.hash)
+  useEffect(() => {
+    const on = () => setHash(window.location.hash)
+    window.addEventListener('hashchange', on)
+    return () => window.removeEventListener('hashchange', on)
+  }, [])
+  const route = hash.slice(1).split('?')[0]
+  const live = route === '/live'
+  const login = route === '/login'
+  const signup = route === '/signup'
+  let session = null
+  try {
+    session = JSON.parse(localStorage.getItem('relearn-session') || 'null')
+  } catch {
+    localStorage.removeItem('relearn-session')
+  }
+
+  useEffect(() => {
+    if (live && !session?.token) window.location.hash = '#/login'
+  }, [live, session?.token])
+
+  useEffect(() => {
+    if (live || login || signup) { window.scrollTo(0, 0); return }
+    if (hash.length > 1 && !hash.startsWith('#/')) {          // landing section anchors after coming back
+      setTimeout(() => document.querySelector(hash)?.scrollIntoView(), 0)
+    } else window.scrollTo(0, 0)
+  }, [live, login, signup, hash])
+
+  const goHome = () => { window.location.hash = '#top' }
+  const goLive = () => { window.location.hash = '#/live' }
+  if (login) return <Login onSwitch={() => { window.location.hash = '#/signup' }} onSuccess={goLive} onBack={goHome} />
+  if (signup) return <Signup onSwitch={() => { window.location.hash = '#/login' }} onSuccess={goLive} onBack={goHome} />
+  return live && session?.token ? <LivePage /> : <Landing />
 }

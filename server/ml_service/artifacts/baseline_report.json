@@ -1,0 +1,25 @@
+{
+  "seen_problems": {
+    "acc": 0.376,
+    "macro_f1": 0.328
+  },
+  "unseen_problems": {
+    "acc": 0.423,
+    "macro_f1": 0.382
+  },
+  "unseen_misconceptions": {
+    "hidden_ids": [
+      30,
+      32,
+      34,
+      35,
+      41,
+      44,
+      46,
+      64
+    ],
+    "tau": 0.131,
+    "known_accepted": 0.801,
+    "unknown_rejected": 0.266
+  }
+}

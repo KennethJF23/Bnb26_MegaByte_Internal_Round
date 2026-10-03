@@ -9,6 +9,7 @@ dotenv.config({ path: path.join(__dirname, ".env") });
 app.use(express.json());
 
 app.use("/api/auth",require("./routes/auth.routes"))
+app.use("/api/ml", require("./routes/ml.routes"));
 
 app.get('/',(req,res)=>{
     res.send("Homepage is working");
