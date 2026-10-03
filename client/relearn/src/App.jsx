@@ -6,7 +6,7 @@ import Signup from './Signup.jsx'
 import McqPage from './McqPage.jsx'
 
 /* ---------- content ---------- */
-const NAV = [['Home', '#top'], ['How it works', '#how'], ['Preview', '#demo'], ['MCQ Diagnostic (100 Qs)', '#/mcq'], ['FAQ', '#faq']]
+const NAV = [['Home', '#top'], ['How it works', '#how'], ['Preview', '#demo'], ['FAQ', '#faq']]
 const TICKER = 'Misconception diagnosis  ✦  Targeted intervention  ✦  Verified resolution  ✦  Learner model  ✦  Fresh reassessment  ✦  '
 const STEPS = [
   ['01', 'Diagnose', '— the model', 'Reads the learner’s answer, working or code and infers the misconception behind it.', 'var(--sky)', 'var(--brand)'],
@@ -108,7 +108,6 @@ function Nav() {
         {NAV.map(([l, h]) => <a key={l} href={h} className="text-md" onClick={() => setOpen(false)}>{l}</a>)}
       </div>
       <div style={{ display: 'flex', gap: 10, alignItems: 'center' }}>
-        <Btn variant="sm" href="#/mcq" style={{ background: 'var(--brand)', color: 'var(--white)', border: 'none' }}>MCQ Bank (100)</Btn>
         <Btn variant="sm white" href="#/login">Live demo</Btn>
       </div>
       <button className="menu-btn" aria-label="Menu" onClick={() => setOpen(!open)}>{open ? '✕' : '☰'}</button>
@@ -197,7 +196,6 @@ function Landing() {
             <Title tag="h1" words={['Fix', 'the', 'misunderstanding,', 'not', 'just', 'the']} hl="output" />
             <p className="lead">Re:Learn finds the belief behind a learner’s wrong answer, teaches against it, then checks it is truly gone.</p>
             <div className="btns">
-              <Btn variant="primary" href="#/mcq">MCQ Diagnostic Bank (100 Qs)</Btn>
               <Btn variant="white" href="#/login">Live demo</Btn>
               <Btn variant="white" href="#how">How it works</Btn>
             </div>
@@ -252,8 +250,8 @@ function Landing() {
         <Title words={['Turn', 'bugs', 'into']} hl="understanding" />
         <p style={{ maxWidth: 600 }}>See the diagnosis, then watch the system confirm the misconception is really gone.</p>
         <div className="cta-card">
-          <h4>Test 100 Empirical Programming Misconceptions</h4>
-          <Btn variant="primary" href="#/mcq">Start MCQ Diagnostic</Btn>
+          <h4>See how Re:Learn diagnoses programming misconceptions</h4>
+          <Btn variant="primary" href="#/login">Try the live demo</Btn>
         </div>
       </div></section>
 
@@ -289,8 +287,8 @@ export default function App() {
   }
 
   useEffect(() => {
-    if (live && !session?.token) window.location.hash = '#/login'
-  }, [live, session?.token])
+    if ((live || mcq) && !session?.token) window.location.hash = '#/login'
+  }, [live, mcq, session?.token])
 
   useEffect(() => {
     if (live || login || signup || mcq) { window.scrollTo(0, 0); return }
@@ -301,7 +299,10 @@ export default function App() {
 
   const goHome = () => { window.location.hash = '#top' }
   const goLive = () => { window.location.hash = '#/live' }
-  if (mcq) return <McqPage />
+  if (mcq) {
+    if (!session?.token) return <Login onSwitch={() => { window.location.hash = '#/signup' }} onSuccess={() => { window.location.hash = '#/mcq' }} onBack={goHome} />
+    return <McqPage />
+  }
   if (login) return <Login onSwitch={() => { window.location.hash = '#/signup' }} onSuccess={goLive} onBack={goHome} />
   if (signup) return <Signup onSwitch={() => { window.location.hash = '#/login' }} onSuccess={goLive} onBack={goHome} />
   return live && session?.token ? <LivePage /> : <Landing />

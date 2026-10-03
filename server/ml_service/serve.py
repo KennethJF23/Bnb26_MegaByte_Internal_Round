@@ -12,6 +12,8 @@ import problems
 ART = os.path.join(os.path.dirname(__file__), "artifacts")
 app = FastAPI(title="Re:Learn misconception service")
 T = os.path.join(ART, "transformer")
+with open(os.path.join(os.path.dirname(__file__), "dataset", "misconception_bank.json"), encoding="utf-8") as fh:
+    BANK_DETAILS = {str(item["id"]): item for item in json.load(fh)}
 
 
 def _load_baseline_bundle():
@@ -81,9 +83,16 @@ def health(): return {"ok": True, "backend": BACKEND}
 @app.post("/diagnose")
 def diagnose(r: Req):
     p = predict(r.code); top = np.argsort(-p)[:3]
-    out = [dict(misconception_id=int(classes[i]),
-                description="Correct / no misconception" if classes[i] == 0 else bank.get(str(classes[i]), ""),
-                confidence=round(float(p[i]), 4)) for i in top]
+    out = []
+    for i in top:
+        misconception_id = int(classes[i])
+        details = BANK_DETAILS.get(str(misconception_id), {})
+        out.append(dict(
+            misconception_id=misconception_id,
+            description="Correct / no misconception" if misconception_id == 0 else bank.get(str(misconception_id), ""),
+            example=details.get("example", ""),
+            confidence=round(float(p[i]), 4),
+        ))
     return dict(diagnosis=out[0] if p[top[0]] >= tau else None,
                 uncertain=bool(p[top[0]] < tau), candidates=out)
 

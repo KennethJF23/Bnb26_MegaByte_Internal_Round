@@ -1,16 +1,53 @@
 """Problem bank + sandboxed test runner for the live demo.
 
-Only the 25 problems that have misconception data are exposed, so the model
-is diagnosing code for problems it has actually seen the style of.
+The full processed coding-problem bank is exposed for practice. The
+misconception classifier may abstain on problems outside its training set.
 
 WARNING: submitted code is executed in a subprocess (timeout, isolated mode,
 temp cwd) but this is NOT a hardened sandbox. Fine for a local/demo run; do not
 expose it to the public internet as is.
 """
-import ast, glob, json, os, subprocess, sys, tempfile
-from dataset import DATA_DIR, CORRUPT_DIR
+import ast, json, os, subprocess, sys, tempfile
+from dataset import DATA_DIR
 
 TIMEOUT_S = 5
+
+TOPIC_RULES = [
+    ("Arrays & Lists", ("list", "array", "index", "slice")),
+    ("Strings", ("string", "substring", "character", "text")),
+    ("Math & Number Theory", ("integer", "number", "prime", "factor", "fibonacci", "divisor", "equation")),
+    ("Searching & Sorting", ("search", "sort", "sorted", "binary search", "maximum", "minimum")),
+    ("Recursion & Backtracking", ("recursive", "recursion", "backtrack")),
+    ("Data Structures", ("dictionary", "set", "tuple", "stack", "queue", "tree", "graph", "linked")),
+    ("Logic & Control Flow", ("condition", "boolean", "logic", "if ", "elif", "else", "loop", "range", "for ", "while ")),
+]
+
+EXTRA_PROBLEMS = [
+    dict(
+        id=1001,
+        title="Maximum Element of List",
+        description=(
+            "Define a function called `max_element(list1: list[int]) -> int` "
+            "which returns the maximum element in list1.\n\n"
+            "Example Cases:\n"
+            "max_element([1, 5, 3]) => 5\n"
+            "max_element([-4, -2, -9]) => -2"
+        ),
+        starter="def max_element(list1):\n    # write your solution here\n    pass\n",
+        examples=[
+            "assert max_element([1, 5, 3]) == 5",
+            "assert max_element([-4, -2, -9]) == -2",
+        ],
+        n_tests=4,
+        category="Arrays & Lists",
+        _tests=[
+            "assert max_element([1, 5, 3]) == 5",
+            "assert max_element([-4, -2, -9]) == -2",
+            "assert max_element([7]) == 7",
+            "assert max_element([0, 12, 4, 12]) == 12",
+        ],
+    )
+]
 
 _RUNNER = r'''
 import sys, json, ast, io, contextlib
@@ -69,22 +106,25 @@ def _starter(solutions):
     return "# write your solution here\n"
 
 
+def _topic(p):
+    text = f"{p.get('title', '')} {p.get('description', '')}".lower()
+    for topic, keywords in TOPIC_RULES:
+        if any(keyword in text for keyword in keywords):
+            return topic
+    return "Logic & Control Flow"
+
+
 def _load():
-    ids = set()
-    for f in glob.glob(os.path.join(CORRUPT_DIR, "problem_*.json")):
-        with open(f, encoding="utf-8") as fh:
-            ids.add(json.load(fh)["problem_id"])
     with open(os.path.join(DATA_DIR, "problems_processed.json"), encoding="utf-8") as fh:
-        allp = {p["id"]: p for p in json.load(fh)}
+        allp = {p["id"]: p for p in json.load(fh) if p.get("unit_tests") and p.get("solutions")}
     bank = {}
-    for i in sorted(ids):
-        p = allp.get(i)
-        if not p:
-            continue
+    for i, p in sorted(allp.items()):
         tests = _split_tests(p["unit_tests"])
         bank[i] = dict(id=i, title=_clean_title(p), description=p["description"].strip(),
                        starter=_starter(p["solutions"]), examples=tests[:2],
-                       n_tests=len(tests), _tests=tests)
+                       n_tests=len(tests), category=_topic(p), _tests=tests)
+    for extra in EXTRA_PROBLEMS:
+        bank.setdefault(extra["id"], extra)
     return bank
 
 
