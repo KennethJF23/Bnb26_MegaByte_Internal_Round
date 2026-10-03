@@ -4,8 +4,8 @@
     "macro_f1": 0.328
   },
   "unseen_problems": {
-    "acc": 0.423,
-    "macro_f1": 0.382
+    "acc": 0.434,
+    "macro_f1": 0.391
   },
   "unseen_misconceptions": {
     "hidden_ids": [

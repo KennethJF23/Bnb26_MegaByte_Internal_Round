@@ -2,7 +2,8 @@
 Uses artifacts/transformer if present, else artifacts/baseline.joblib.
 POST /diagnose {"code": "..."} -> top-3 misconceptions + abstain flag
 """
-import json, os, numpy as np
+import json, os, sys
+import numpy as np
 from fastapi import FastAPI
 from pydantic import BaseModel
 from fastapi import HTTPException
@@ -11,6 +12,40 @@ import problems
 ART = os.path.join(os.path.dirname(__file__), "artifacts")
 app = FastAPI(title="Re:Learn misconception service")
 T = os.path.join(ART, "transformer")
+
+
+def _load_baseline_bundle():
+    import joblib
+
+    path = os.path.join(ART, "baseline.joblib")
+    if not os.path.exists(path):
+        raise FileNotFoundError(f"Missing model artifact: {path}")
+
+    bundle = joblib.load(path)
+    model = bundle.get("model")
+    if model is None or not hasattr(model, "predict_proba"):
+        raise ValueError("baseline.joblib does not contain a fitted predict_proba model")
+
+    try:
+        model.predict_proba(["print(1)"])
+    except Exception as exc:
+        raise ValueError(f"Fitted model check failed: {exc}") from exc
+
+    return bundle
+
+
+def _load_or_retrain_baseline():
+    try:
+        return _load_baseline_bundle()
+    except Exception as exc:
+        print(f"[warn] invalid baseline model artifact ({exc}); retraining...", file=sys.stderr)
+        try:
+            from train_baseline import main as train_baseline_main
+            train_baseline_main()
+            return _load_baseline_bundle()
+        except Exception as retrain_exc:
+            raise RuntimeError(f"Could not load or rebuild the baseline model: {retrain_exc}") from retrain_exc
+
 
 if os.path.exists(os.path.join(T, "model.pt")):
     import torch, torch.nn as nn
@@ -31,8 +66,7 @@ if os.path.exists(os.path.join(T, "model.pt")):
             return torch.softmax(net(e["input_ids"], e["attention_mask"]), -1)[0].numpy()
     BACKEND = "transformer"
 else:
-    import joblib
-    b = joblib.load(os.path.join(ART, "baseline.joblib"))
+    b = _load_or_retrain_baseline()
     m, tau, bank = b["model"], b["tau"], {str(k): v for k, v in b["bank"].items()}
     classes = list(m.classes_)
     predict = lambda code: m.predict_proba([code])[0]
