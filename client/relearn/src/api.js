@@ -37,6 +37,20 @@ export const submitCode = (problem_id, code) =>
     body: JSON.stringify({ problem_id, code }),
   })
 
+export const getNextIntervention = (diagnosis, problemId, availableProblems, recentProblemIds = []) =>
+  call('/api/interventions/next', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', ...analyticsHeaders() },
+    body: JSON.stringify({ diagnosis, problemId, availableProblems, recentProblemIds }),
+  })
+
+export const recordInterventionAttempt = (attempt) =>
+  call('/api/interventions/attempt', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', ...analyticsHeaders() },
+    body: JSON.stringify(attempt),
+  })
+
 const getGuestSessionKey = () => {
   let key = localStorage.getItem('relearn_guest_session')
   if (!key) {

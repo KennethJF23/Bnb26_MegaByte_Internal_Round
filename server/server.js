@@ -13,12 +13,13 @@ app.use(express.json());
 app.use("/api/auth", require("./routes/auth.routes"));
 app.use("/api/ml", require("./routes/ml.routes"));
 app.use("/api/analytics", require("./routes/analytics.routes"));
+app.use("/api/interventions", require("./routes/intervention.routes"));
 
 app.get("/", (req, res) => {
   res.send("Homepage is working");
 });
 
-const connectDB = require("./config/dB");
+const connectDB = require("./config/db");
 const PORT = process.env.PORT || 5000;
 
 connectDB()

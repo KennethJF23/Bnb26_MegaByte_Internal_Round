@@ -15,7 +15,7 @@ const performanceEventSchema = new mongoose.Schema(
     },
     eventType: {
       type: String,
-      enum: ["code_submission", "mcq_assessment"],
+      enum: ["code_submission", "mcq_assessment", "intervention_attempt"],
       required: true,
       index: true,
     },
@@ -153,7 +153,22 @@ const learnerProfileSchema = new mongoose.Schema(
   { timestamps: true }
 );
 
+const interventionAttemptSchema = new mongoose.Schema(
+  {
+    userId: { type: mongoose.Schema.Types.ObjectId, ref: "User", required: false, index: true },
+    sessionKey: { type: String, required: false, index: true },
+    interventionId: { type: String, required: true, index: true },
+    misconceptionId: { type: String, required: true, index: true },
+    problemId: { type: String, required: true },
+    correct: { type: Boolean, required: true },
+    diagnosisConfidence: { type: Number, default: 0 },
+    status: { type: String, enum: ["active", "resolving", "eradicated"], required: true },
+  },
+  { timestamps: true }
+);
+
 const PerformanceEvent = mongoose.model("PerformanceEvent", performanceEventSchema);
 const LearnerProfile = mongoose.model("LearnerProfile", learnerProfileSchema);
+const InterventionAttempt = mongoose.model("InterventionAttempt", interventionAttemptSchema);
 
-module.exports = { PerformanceEvent, LearnerProfile };
+module.exports = { PerformanceEvent, LearnerProfile, InterventionAttempt };

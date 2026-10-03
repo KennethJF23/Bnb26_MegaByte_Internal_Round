@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react'
-import { getProblems, submitCode, recordAnalyticsEvent } from './api.js'
+import { getProblems, submitCode, recordAnalyticsEvent, getNextIntervention, recordInterventionAttempt } from './api.js'
 import './live.css'
 
 const pct = (x) => `${Math.round(x * 100)}%`
@@ -14,6 +14,7 @@ export default function LivePage() {
   const [busy, setBusy] = useState(false)
   const [err, setErr] = useState('')
   const [tab, setTab] = useState('problem') // problem | result
+  const [intervention, setIntervention] = useState(null)
   const taRef = useRef(null)
 
   useEffect(() => {
@@ -29,11 +30,37 @@ export default function LivePage() {
     setPid(id); setCode(p.starter); setRes(null); setErr(''); setTab('problem')
   }
 
+  const startReassessment = () => {
+    if (!intervention?.practiceProblemId) return
+    choose(Number(intervention.practiceProblemId))
+    setTab('problem')
+  }
+
   const submit = async () => {
     setBusy(true); setErr(''); setRes(null); setTab('result')
     try {
       const result = await submitCode(pid, code)
       setRes(result)
+      const activeIntervention = intervention
+      if (activeIntervention && String(activeIntervention.practiceProblemId) === String(pid)) {
+        recordInterventionAttempt({
+          interventionId: activeIntervention.id,
+          misconceptionId: activeIntervention.misconceptionId,
+          problemId: pid,
+          correct: !!result.correct,
+          diagnosisConfidence: activeIntervention.confidence,
+        }).catch(() => {})
+      }
+      if (result?.diagnosis?.diagnosis && !result.diagnosis.uncertain) {
+        getNextIntervention(
+          result.diagnosis,
+          pid,
+          problems.map(({ id, title, description, category }) => ({ id, title, description, category })),
+          intervention ? [intervention.practiceProblemId] : [],
+        ).then(({ intervention: next }) => setIntervention(next || null)).catch(() => setIntervention(null))
+      } else if (result.correct || result.syntax) {
+        setIntervention(null)
+      }
       // Telemetry tracking for production trend analysis
       const diagDesc = result?.diagnosis?.diagnosis?.description || null
       const topCand = result?.diagnosis?.candidates?.[0]
@@ -163,6 +190,20 @@ export default function LivePage() {
                           <span>{c.misconception_id === 0 ? 'Correct / no misconception' : c.description}</span>
                         </div>
                       ))}
+                    </div>
+                  )}
+
+                  {intervention && (
+                    <div className="diag" style={{ marginTop: 18, borderColor: 'var(--brand)' }}>
+                      <span className="pretitle">Targeted intervention</span>
+                      <h5 style={{ margin: '12px 0 4px' }}>{intervention.title}</h5>
+                      <p>{intervention.explanation}</p>
+                      <p className="text-md" style={{ marginTop: 12 }}>{intervention.guidance}</p>
+                      <div className="fail" style={{ marginTop: 12, whiteSpace: 'pre-wrap' }}>{intervention.example}</div>
+                      <p style={{ marginTop: 12 }}>
+                        Fresh reassessment: <b>{intervention.practiceProblemTitle}</b>
+                      </p>
+                      <button className="btn primary" onClick={startReassessment}>Start reassessment</button>
                     </div>
                   )}
                 </>}
