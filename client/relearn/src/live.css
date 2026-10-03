@@ -1,16 +1,50 @@
-.live{box-sizing:border-box;height:100vh;padding:92px 0 20px;background:var(--page);display:flex;flex-direction:column}
-.live>.container{flex:1;min-height:0;display:flex;flex-direction:column}
+.live{box-sizing:border-box;min-height:100vh;padding:92px 0 40px;background:var(--page);display:flex;flex-direction:column;overflow-y:auto}
+.live>.container{flex:0 0 auto;display:flex;flex-direction:column}
 .live .head{display:flex;flex-wrap:wrap;align-items:center;gap:6px 18px;margin-bottom:14px}
-.live .cols{flex:1;min-height:0;display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1.15fr);gap:20px}
-.live .pane{display:flex;flex-direction:column;min-height:0;padding:20px 24px}
-.live .scroll{flex:1;min-height:0;overflow:auto;padding-right:4px}
+.live .cols{display:grid;align-items:start;grid-template-columns:minmax(0,1fr) 250px;gap:20px}
+.live .pane{display:flex;flex-direction:column;min-height:620px;padding:20px 24px}
+.live .scroll{flex:1;min-height:0;padding-right:4px}
+.live-main{display:flex;flex-direction:column;gap:20px;min-width:0}
+.live-question,.live-editor,.live-result{padding:24px 30px}
+.live-question h3{margin:12px 0 0;font:700 clamp(24px,3vw,34px)/1.15 var(--font-head);letter-spacing:-.8px}
+.live-editor{display:flex;flex-direction:column;min-height:440px}
+.live-editor .editor{min-height:290px}
+.live-result{min-height:180px}
+.live-result-heading{display:flex;align-items:center;gap:10px;border-bottom:1px solid var(--line-2);padding-bottom:14px;margin-bottom:16px}
+.live-result-heading h5{margin:0}
 .live .tabs{display:flex;gap:8px;margin-bottom:16px;border-bottom:1px solid var(--line-2);padding-bottom:12px}
 .live .tabs button{all:unset;cursor:pointer;padding:8px 18px;border-radius:100px;font:500 15px var(--font-body);color:var(--muted);display:inline-flex;align-items:center;gap:8px}
 .live .tabs button:hover{background:var(--page-2)}
 .live .tabs button.on{background:var(--panel);color:var(--page)}
 .live .dot{width:9px;height:9px;border-radius:50%;display:inline-block}
 .live .dot.ok{background:var(--mint-d)}.live .dot.bad{background:var(--accent)}
-@media(max-width:900px){.live{height:auto;min-height:100vh}.live .cols{grid-template-columns:1fr}.live .pane{min-height:460px}}
+@media(max-width:1100px){.live .cols{grid-template-columns:1fr}.live-sidebar{display:grid;grid-template-columns:1fr 1fr;gap:20px}}
+@media(max-width:900px){.live .cols{grid-template-columns:1fr}.live-sidebar{grid-column:auto;display:block}.live .pane{min-height:460px}}
+.live-toolbar{display:flex;gap:12px;margin-bottom:10px}
+.live-toolbar input,.live-toolbar select{box-sizing:border-box;padding:12px 16px;border:1px solid var(--line);border-radius:14px;background:var(--white);color:var(--ink);font:500 14px var(--font-body)}
+.live-toolbar input{flex:1;min-width:0}
+.live .live-toolbar select{width:210px;flex:0 0 210px}
+.live-category-pills{display:flex;gap:8px;overflow-x:auto;padding:2px 0 14px}
+.live-category-pills button{border:1px solid var(--line);border-radius:999px;padding:8px 13px;background:var(--white);color:var(--muted);font:500 12px var(--font-body);white-space:nowrap;cursor:pointer}
+.live-category-pills button.active{background:var(--brand);border-color:var(--brand);color:var(--white)}
+.live-problem-header{display:flex;align-items:center;gap:8px;margin-bottom:14px}
+.live-badge{padding:5px 9px;border-radius:999px;background:var(--page-2);color:var(--brand);font-size:11px;font-weight:700}
+.live-position{margin-left:auto;color:var(--muted);font-size:12px}
+.live-card-nav{display:flex;justify-content:space-between;gap:10px;margin-top:22px}
+.live-card-nav button:disabled{opacity:.5;cursor:not-allowed}
+.live-empty{text-align:center;padding:50px 10px}
+.live-sidebar{display:flex;flex-direction:column;gap:20px}
+.live-sidebar-card{padding:18px;border:1px solid var(--line);border-radius:16px;background:var(--white)}
+.live-sidebar-title{display:flex;justify-content:space-between;gap:12px;margin-bottom:14px;font-size:13px;font-weight:700}
+.live-sidebar-title span:last-child{color:var(--muted);font-weight:500}
+.live-progress{height:7px;border-radius:99px;background:var(--line-2);overflow:hidden;margin-bottom:15px}
+.live-progress i{display:block;height:100%;background:var(--brand)}
+.live-palette{display:grid;grid-template-columns:repeat(5,1fr);gap:6px}
+.live-palette button{aspect-ratio:1;border:1px solid var(--line);border-radius:8px;background:var(--page);color:var(--muted);cursor:pointer}
+.live-palette button.current{background:var(--brand);border-color:var(--brand);color:var(--white);font-weight:700}
+.live-topic-row{display:flex;justify-content:space-between;width:100%;padding:9px 0;border:0;border-bottom:1px solid var(--line-2);background:none;color:var(--ink);font:500 12px var(--font-body);text-align:left;cursor:pointer}
+.live-topic-row:last-child{border-bottom:0}
+.live-topic-row strong{color:var(--brand)}
 .live select{width:100%;padding:14px 16px;border-radius:14px;border:1px solid var(--line);background:var(--page);color:var(--ink);font:500 16px var(--font-body)}
 .live .desc{margin:16px 0 0;white-space:pre-wrap;font-size:15px}
 .live .ex{margin-top:16px;padding:14px 16px;border-radius:14px;background:var(--panel);color:var(--page);font:400 13px/1.7 var(--font-mono);overflow-x:auto;white-space:pre}
@@ -25,7 +59,23 @@
 .verdict small{font:400 15px var(--font-body);color:var(--muted);margin-left:auto}
 .fail{margin:10px 0;padding:12px 16px;border-radius:12px;background:var(--page);border:1px solid var(--line-2);font:400 13px/1.7 var(--font-mono);overflow-x:auto;white-space:pre}
 .fail b{font-weight:600}
-.diag{margin-top:22px;padding:20px 22px;border-radius:16px;background:var(--white);border:1px solid var(--line)}
+.live-diagnosis{margin-top:22px;padding:22px;border-radius:16px;border:1px solid var(--line)}
+.diagnosis-warning{background:#fff3f0;border-color:var(--accent)}
+.diagnosis-neutral{background:#effaf5;border-color:var(--mint-d)}
+.live-diagnosis-header{display:flex;gap:12px;align-items:flex-start}
+.live-diagnosis-icon{width:34px;height:34px;display:grid;place-items:center;flex:none;border-radius:10px;background:var(--accent);color:var(--white);font-size:20px;font-weight:700}
+.diagnosis-neutral .live-diagnosis-icon{background:var(--mint-d)}
+.live-diagnosis h4{margin:0;font:700 18px/1.25 var(--font-head)}
+.live-diagnosis-header p{margin:4px 0 0;color:var(--muted);font-size:13px;line-height:1.45}
+.live-diagnosis-body{margin:18px 0 0;line-height:1.55}
+.live-diagnosis-body p{margin:0}
+.live-confidence{font-weight:700;color:var(--brand);margin-top:8px!important}
+.live-candidates{display:flex;flex-direction:column;gap:9px;margin-top:16px;padding:14px;background:var(--white);border-radius:12px}
+.live-candidate{display:grid;grid-template-columns:auto 1fr auto;align-items:start;gap:9px;font-size:13px;line-height:1.4}
+.candidate-tag{padding:3px 7px;border-radius:5px;background:var(--pink);color:var(--accent);font-size:11px;font-weight:700;white-space:nowrap}
+.candidate-tag.active{background:var(--accent);color:var(--white)}
+.live-candidate small{color:var(--muted);white-space:nowrap}
+.live-takeaway{display:flex;gap:9px;margin-top:16px;padding:12px 14px;border-radius:10px;background:var(--butter);color:var(--ink);font-size:13px;line-height:1.45}
 .bar-row{display:flex;align-items:center;gap:12px;margin-top:10px;font-size:14px}
 .bar-row .bar{flex:none;width:90px;height:8px;border-radius:8px;background:var(--line-2);overflow:hidden}
 .bar-row .bar i{display:block;height:100%;background:var(--brand)}
