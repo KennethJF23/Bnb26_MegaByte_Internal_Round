@@ -56,7 +56,10 @@ export default function LivePage() {
     <div className="live">
       <nav className="nav"><div className="container row">
         <a href="#top" className="logo">Re<b>:</b>Learn</a>
-        <a href="#top" className="btn sm white back">← Back home</a>
+        <div style={{ display: 'flex', gap: 10, alignItems: 'center' }}>
+          <a href="#/mcq" className="btn sm" style={{ background: 'var(--brand)', color: 'var(--white)', border: 'none' }}>MCQ Bank (100 Qs)</a>
+          <a href="#top" className="btn sm white back">← Back home</a>
+        </div>
       </div></nav>
 
       <div className="container">
@@ -75,6 +78,9 @@ export default function LivePage() {
               <button className={tab === 'result' ? 'on' : ''} onClick={() => setTab('result')}>
                 Result{res && <i className={`dot ${res.correct ? 'ok' : 'bad'}`} />}
               </button>
+              <a href="#/mcq" style={{ all: 'unset', cursor: 'pointer', padding: '10px 16px', fontSize: 13, fontWeight: 600, color: 'var(--brand)', display: 'inline-flex', alignItems: 'center', gap: 4 }}>
+                Diagnostic MCQs (100) ↗
+              </a>
             </div>
 
             <div className="scroll" data-lenis-prevent>
