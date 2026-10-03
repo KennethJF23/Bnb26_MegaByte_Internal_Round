@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react'
-import { getProblems, submitCode } from './api.js'
+import { getProblems, submitCode, recordAnalyticsEvent } from './api.js'
 import './live.css'
 
 const pct = (x) => `${Math.round(x * 100)}%`
@@ -31,7 +31,27 @@ export default function LivePage() {
 
   const submit = async () => {
     setBusy(true); setErr(''); setRes(null); setTab('result')
-    try { setRes(await submitCode(pid, code)) }
+    try {
+      const result = await submitCode(pid, code)
+      setRes(result)
+      // Telemetry tracking for production trend analysis
+      const diagDesc = result?.diagnosis?.diagnosis?.description || null
+      const topCand = result?.diagnosis?.candidates?.[0]
+      recordAnalyticsEvent({
+        eventType: 'code_submission',
+        problemId: String(pid),
+        title: problem?.title || `Problem ${pid}`,
+        category: problem?.category || 'Algorithms & Logic',
+        difficulty: 'Intermediate',
+        correct: !!result?.correct,
+        testsPassed: result?.passed || (result?.correct ? 5 : 0),
+        testsTotal: result?.total || 5,
+        misconceptionId: result?.diagnosis?.diagnosis?.misconception_id ? String(result.diagnosis.diagnosis.misconception_id) : null,
+        misconceptionName: result?.correct ? null : (diagDesc || 'Identified Execution Bug'),
+        misconceptionConfidence: topCand?.confidence || 0.8,
+        studentConfidence: 'medium',
+      }).catch(() => {})
+    }
     catch (e) { setErr(e.message) }
     finally { setBusy(false) }
   }
@@ -57,6 +77,7 @@ export default function LivePage() {
       <nav className="nav"><div className="container row">
         <a href="#top" className="logo">Re<b>:</b>Learn</a>
         <div style={{ display: 'flex', gap: 10, alignItems: 'center' }}>
+          <a href="#/analytics" className="btn sm" style={{ background: '#5B4BF5', color: '#fff', border: 'none' }}>📈 Trends & Mastery</a>
           <a href="#/mcq" className="btn sm" style={{ background: 'var(--brand)', color: 'var(--white)', border: 'none' }}>MCQ Bank (100 Qs)</a>
           <a href="#top" className="btn sm white back">← Back home</a>
         </div>
@@ -78,6 +99,9 @@ export default function LivePage() {
               <button className={tab === 'result' ? 'on' : ''} onClick={() => setTab('result')}>
                 Result{res && <i className={`dot ${res.correct ? 'ok' : 'bad'}`} />}
               </button>
+              <a href="#/analytics" style={{ all: 'unset', cursor: 'pointer', padding: '10px 16px', fontSize: 13, fontWeight: 600, color: '#5B4BF5', display: 'inline-flex', alignItems: 'center', gap: 4 }}>
+                📈 Trends
+              </a>
               <a href="#/mcq" style={{ all: 'unset', cursor: 'pointer', padding: '10px 16px', fontSize: 13, fontWeight: 600, color: 'var(--brand)', display: 'inline-flex', alignItems: 'center', gap: 4 }}>
                 Diagnostic MCQs (100) ↗
               </a>

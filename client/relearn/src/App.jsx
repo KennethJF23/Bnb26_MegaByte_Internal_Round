@@ -4,9 +4,17 @@ import LivePage from './LivePage.jsx'
 import Login from './Login.jsx'
 import Signup from './Signup.jsx'
 import McqPage from './McqPage.jsx'
+import TrendAnalysisPage from './TrendAnalysisPage.jsx'
 
 /* ---------- content ---------- */
-const NAV = [['Home', '#top'], ['How it works', '#how'], ['Preview', '#demo'], ['MCQ Diagnostic (100 Qs)', '#/mcq'], ['FAQ', '#faq']]
+const NAV = [
+  ['Home', '#top'],
+  ['How it works', '#how'],
+  ['Performance Trends', '#/analytics'],
+  ['MCQ Diagnostic (100 Qs)', '#/mcq'],
+  ['Preview', '#demo'],
+  ['FAQ', '#faq'],
+]
 const TICKER = 'Misconception diagnosis  ✦  Targeted intervention  ✦  Verified resolution  ✦  Learner model  ✦  Fresh reassessment  ✦  '
 const STEPS = [
   ['01', 'Diagnose', '— the model', 'Reads the learner’s answer, working or code and infers the misconception behind it.', 'var(--sky)', 'var(--brand)'],
@@ -108,6 +116,7 @@ function Nav() {
         {NAV.map(([l, h]) => <a key={l} href={h} className="text-md" onClick={() => setOpen(false)}>{l}</a>)}
       </div>
       <div style={{ display: 'flex', gap: 10, alignItems: 'center' }}>
+        <Btn variant="sm" href="#/analytics" style={{ background: '#5B4BF5', color: '#fff', border: 'none' }}>📈 Performance Trends</Btn>
         <Btn variant="sm" href="#/mcq" style={{ background: 'var(--brand)', color: 'var(--white)', border: 'none' }}>MCQ Bank (100)</Btn>
         <Btn variant="sm white" href="#/login">Live demo</Btn>
       </div>
@@ -197,6 +206,7 @@ function Landing() {
             <Title tag="h1" words={['Fix', 'the', 'misunderstanding,', 'not', 'just', 'the']} hl="output" />
             <p className="lead">Re:Learn finds the belief behind a learner’s wrong answer, teaches against it, then checks it is truly gone.</p>
             <div className="btns">
+              <Btn variant="primary" href="#/analytics" style={{ background: '#5B4BF5', borderColor: '#5B4BF5' }}>📈 Performance Trends</Btn>
               <Btn variant="primary" href="#/mcq">MCQ Diagnostic Bank (100 Qs)</Btn>
               <Btn variant="white" href="#/login">Live demo</Btn>
               <Btn variant="white" href="#how">How it works</Btn>
@@ -281,6 +291,7 @@ export default function App() {
   const login = route === '/login'
   const signup = route === '/signup'
   const mcq = route === '/mcq' || route === '/quiz'
+  const analytics = route === '/analytics' || route === '/trends'
   let session = null
   try {
     session = JSON.parse(localStorage.getItem('relearn-session') || 'null')
@@ -293,14 +304,15 @@ export default function App() {
   }, [live, session?.token])
 
   useEffect(() => {
-    if (live || login || signup || mcq) { window.scrollTo(0, 0); return }
+    if (live || login || signup || mcq || analytics) { window.scrollTo(0, 0); return }
     if (hash.length > 1 && !hash.startsWith('#/')) {          // landing section anchors after coming back
       setTimeout(() => document.querySelector(hash)?.scrollIntoView(), 0)
     } else window.scrollTo(0, 0)
-  }, [live, login, signup, mcq, hash])
+  }, [live, login, signup, mcq, analytics, hash])
 
   const goHome = () => { window.location.hash = '#top' }
   const goLive = () => { window.location.hash = '#/live' }
+  if (analytics) return <TrendAnalysisPage />
   if (mcq) return <McqPage />
   if (login) return <Login onSwitch={() => { window.location.hash = '#/signup' }} onSuccess={goLive} onBack={goHome} />
   if (signup) return <Signup onSwitch={() => { window.location.hash = '#/login' }} onSuccess={goLive} onBack={goHome} />

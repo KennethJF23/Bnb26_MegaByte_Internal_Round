@@ -1,5 +1,6 @@
 import { useState, useEffect, useMemo, useRef } from 'react'
 import { MCQ_BANK } from './data/mcqQuestions.js'
+import { recordAnalyticsEvent } from './api.js'
 import './mcq.css'
 
 const CATEGORIES = [
@@ -14,6 +15,132 @@ const CATEGORIES = [
 ]
 
 const DIFFICULTIES = ['All Difficulties', 'Beginner', 'Intermediate', 'Advanced']
+
+const CATEGORY_INSIGHTS = {
+  'Loops & Iteration': {
+    analogy: "Think of range(n) not as counting to n, but as a factory conveyor belt with n predetermined numbered slots: 0, 1, ..., n-1. When you loop, the loop variable is handed the next item from the belt. Mutating that variable inside the loop body never changes the conveyor belt's predetermined schedule.",
+    goldenRule: "range(start, stop, step) includes start but stops strictly before stop. Total iterations = (stop - start) / step.",
+    trap: "Assuming range(n) ends at n inclusive or that mutating the loop index rewinds iteration.",
+  },
+  'Lists & Memory References': {
+    analogy: "In Python, a variable holding a list is just a sticky note with a house address. Writing list2 = list1 does NOT build a second house—it just writes the exact same address on a second sticky note! Any remodeling done through list2 permanently changes list1's house.",
+    goldenRule: "Always make an explicit copy: list2 = list1.copy() or list2 = list1[:] (or copy.deepcopy() for nested lists).",
+    trap: "Expecting assignment '=' to duplicate list contents in independent memory.",
+  },
+  'Functions & Recursion': {
+    analogy: "Every recursive call is an independent clone working in its own isolated room (stack frame). When a clone finishes, it calls 'return' to hand its result back to the clone above it. If you forget to return the recursive call, the answer drops on the floor and Python hands back None.",
+    goldenRule: "Every single branch in a recursive function MUST explicitly return a value, including the base case.",
+    trap: "Forgetting to return the recursive call: 'helper(n-1)' instead of 'return helper(n-1)'.",
+  },
+  'Conditionals & Logic': {
+    analogy: "Python evaluates 'and' and 'or' with short-circuit evaluation from left to right. In 'A or B', if A is truthy, Python immediately returns A without ever checking B. Non-zero numbers and non-empty collections are always truthy!",
+    goldenRule: "Write out comparisons explicitly: write 'x == 1 or x == 2', NEVER 'x == 1 or 2' (which evaluates as (x == 1) or True).",
+    trap: "Believing 'or' groups values grammatically instead of evaluating Boolean expressions.",
+  },
+  'Strings & Immutability': {
+    analogy: "Strings in Python are carved into stone. They can never be mutated in-place. Methods like .replace(), .strip(), and .upper() don't chisel the existing stone—they sculpt a brand new stone and return it to you.",
+    goldenRule: "Always reassign the return value of string operations: s = s.replace('a', 'b').",
+    trap: "Calling string methods without reassigning: s.replace('a', 'b') leaves s unchanged!",
+  },
+  'OOP & Data Structures': {
+    analogy: "Default function and method arguments like def __init__(self, items=[]): are evaluated ONCE when the code is first loaded into memory by Python, NOT every time a new class instance is created. All objects end up sharing the exact same list!",
+    goldenRule: "Never use mutable defaults. Always use def __init__(self, items=None): followed by self.items = items if items is not None else [].",
+    trap: "Using [] or {} as default parameters in functions or constructors.",
+  },
+  'Variables & Operators': {
+    analogy: "Single '=' is an action (bind variable to object), while '==' is a question (are these values equal?). Division '/' always produces a floating point number (4 / 2 -> 2.0), while '//' floors to an integer.",
+    goldenRule: "Use '//' for integer index calculations and '=' solely for assignment.",
+    trap: "Confusing '=' with '==' or expecting integer division from '/'.",
+  },
+}
+
+function generateStepTrace(q, chosenOptIdx) {
+  const isCorrect = chosenOptIdx === q.correct
+  const chosenText = chosenOptIdx !== undefined && q.options[chosenOptIdx] ? q.options[chosenOptIdx] : 'None'
+  const correctText = q.options[q.correct]
+  const distractorReason = q.distractors?.[chosenOptIdx] || q.explanation
+
+  return [
+    {
+      step: 'Step 1: Initialization',
+      action: 'Python allocates memory and prepares variables',
+      trap: 'Often assumes 1-based indexing or pass-by-value duplication',
+      reality: 'Variables initialized according to exact Python object model',
+    },
+    {
+      step: 'Step 2: Runtime Evaluation',
+      action: 'Expressions evaluated left-to-right following operator precedence',
+      trap: `Misconception Trap: ${q.misconception}`,
+      reality: q.explanation.length > 130 ? q.explanation.slice(0, 130) + '...' : q.explanation,
+    },
+    {
+      step: 'Step 3: State Mutation',
+      action: 'Memory state after loops/conditionals complete',
+      trap: isCorrect ? 'None (Student correctly anticipated runtime)' : `Led to distractor Option: "${chosenText}"`,
+      reality: `Evaluated correctly to Option: "${correctText}"`,
+    },
+    {
+      step: 'Step 4: Output Emission',
+      action: 'Result printed to console or returned to caller',
+      trap: isCorrect ? 'None' : distractorReason,
+      reality: `Final result: ${correctText}`,
+    },
+  ]
+}
+
+function getSocraticHint(q, wrongChoiceIdx) {
+  const chosenText = q.options[wrongChoiceIdx] || ''
+  const cat = q.category
+  if (cat === 'Loops & Iteration') {
+    return `You predicted "${chosenText}". Check the bounds: in Python, does the loop include or exclude the endpoint? Trace the counter values on a piece of paper starting from index 0.`
+  }
+  if (cat === 'Functions & Recursion') {
+    return `You predicted "${chosenText}". Check whether the function has an explicit 'return' statement or if it only calls print(). Remember: in Python, printing to stdout does NOT assign a value to a variable; functions without an explicit return statement evaluate to None.`
+  }
+  if (cat === 'Lists & Memory References') {
+    return `You predicted "${chosenText}". Ask yourself: did the assignment operator create an entirely new list in memory, or did both variables point to the exact same list address in the heap?`
+  }
+  if (cat === 'Strings & Immutability') {
+    return `You predicted "${chosenText}". In Python, strings cannot be mutated in-place. If a string method like .replace() is called, does it modify the original string or return a brand new one?`
+  }
+  if (cat === 'Conditionals & Logic') {
+    return `You predicted "${chosenText}". Notice how Python evaluates 'and' and 'or'. Non-zero numbers and non-empty collections are considered truthy in conditional checks.`
+  }
+  if (cat === 'OOP & Data Structures') {
+    return `You predicted "${chosenText}". Check where default parameter values are initialized in Python. Are default lists created once when Python reads the function, or fresh on every call?`
+  }
+  return `You predicted "${chosenText}". Trace how Python loads and mutates these variables step-by-step.`
+}
+
+function generateEscalatedClue(q, wrongAttempts) {
+  const letters = ['A', 'B', 'C', 'D']
+  if (!wrongAttempts || wrongAttempts.length === 0) return ''
+  const firstIdx = wrongAttempts[0]
+  const secondIdx = wrongAttempts[1]
+  const opt1 = q.options[firstIdx]
+  const opt2 = secondIdx !== undefined ? q.options[secondIdx] : null
+
+  let text = `In Attempt 1, you selected Option ${letters[firstIdx]} ("${opt1}"). `
+  if (opt2) {
+    text += `In Attempt 2, you switched to Option ${letters[secondIdx]} ("${opt2}"). `
+  }
+  text += `Both attempts triggered common misconceptions. `
+
+  if (q.category === 'Functions & Recursion') {
+    text += `Notice the difference between side-effects and return values: print() only outputs characters to stdout; it returns nothing. In Python, an unreturned function call always produces the singleton object 'None'.`
+  } else if (q.category === 'Loops & Iteration') {
+    text += `Notice that range(n) stops BEFORE n (from 0 to n-1). If range(n-1) is used, it stops before n-1.`
+  } else if (q.category === 'Lists & Memory References') {
+    text += `In Python, assigning 'list2 = list1' does NOT make a duplicate copy. Both variables share the exact same reference in the heap.`
+  } else if (q.category === 'Strings & Immutability') {
+    text += `Python strings are immutable. Any string operation produces a new string and leaves the original variable untouched unless explicitly reassigned.`
+  } else if (q.category === 'Conditionals & Logic') {
+    text += `Python's 'and'/'or' operators short-circuit based on truthiness rather than returning simple boolean True/False.`
+  } else {
+    text += `Inspect the execution step table below to see the exact memory and variable transitions.`
+  }
+  return text
+}
 
 export default function McqPage() {
   // Navigation & Mode
@@ -45,6 +172,19 @@ export default function McqPage() {
   // Active Question Tracking
   const [currentIndex, setCurrentIndex] = useState(0)
   const [copied, setCopied] = useState(false)
+
+  // Computerized Adaptive Testing (CAT / DDA) State
+  const [adaptiveMode, setAdaptiveMode] = useState(true)
+  const [currentLevel, setCurrentLevel] = useState('Intermediate') // 'Beginner' | 'Intermediate' | 'Advanced'
+  const [streak, setStreak] = useState(0)
+  const [adaptiveAlert, setAdaptiveAlert] = useState(null)
+
+  // Progressive Multi-Tier Explanation State
+  const [explanationTier, setExplanationTier] = useState('pivot') // 'pivot' | 'trace' | 'analogy' | 'distractors'
+  const [attemptHistory, setAttemptHistory] = useState({})
+  const [escalatedQuestions, setEscalatedQuestions] = useState({})
+  const [wrongAttempts, setWrongAttempts] = useState({}) // { [qId]: [opt0, opt2] }
+  const [revealedAnswers, setRevealedAnswers] = useState({}) // { [qId]: boolean }
 
   // Assessment / Timed Exam Mode State
   const [examStarted, setExamStarted] = useState(false)
@@ -148,13 +288,153 @@ export default function McqPage() {
     })
   }, [answers])
 
-  // Handle Option Selection
+  // Handle Option Selection with Multi-Attempt Adaptive Escalation
   const handleSelectOption = (optIdx) => {
     if (!activeQuestion) return
-    setAnswers((prev) => ({
-      ...prev,
-      [activeQuestion.id]: optIdx,
-    }))
+    const qId = activeQuestion.id
+    const isCorrect = optIdx === activeQuestion.correct
+    const prevWrongs = wrongAttempts[qId] || []
+
+    // If this wrong option was already tried and failed, don't re-penalize
+    if (prevWrongs.includes(optIdx) && !revealedAnswers[qId] && answers[qId] !== activeQuestion.correct) return
+
+    // If already revealed or already solved correctly, let user view options freely
+    if (revealedAnswers[qId] || answers[qId] === activeQuestion.correct) {
+      setAnswers((prev) => ({ ...prev, [qId]: optIdx }))
+      return
+    }
+
+    if (isCorrect) {
+      // Correct answer!
+      setAnswers((prev) => ({ ...prev, [qId]: optIdx }))
+      setRevealedAnswers((prev) => ({ ...prev, [qId]: true }))
+      setExplanationTier('pivot')
+
+      if (adaptiveMode && mode === 'practice') {
+        const nextStreak = streak + 1
+        setStreak(nextStreak)
+        if (currentLevel === 'Beginner') {
+          setCurrentLevel('Intermediate')
+          setAdaptiveAlert({
+            type: 'up',
+            msg: '🚀 Promoted! Difficulty increased to Intermediate — testing real-world code structures.',
+          })
+        } else if (currentLevel === 'Intermediate' && nextStreak >= 1) {
+          setCurrentLevel('Advanced')
+          setAdaptiveAlert({
+            type: 'up',
+            msg: '🔥 Mastery Level Up! Promoted to Advanced — testing complex edge cases.',
+          })
+        } else {
+          setAdaptiveAlert({
+            type: 'up',
+            msg: `⚡ Excellent! Streak: ${nextStreak} in Advanced tier!`,
+          })
+        }
+      }
+
+      recordAnalyticsEvent({
+        eventType: 'mcq_assessment',
+        problemId: String(activeQuestion.id),
+        title: activeQuestion.title,
+        category: activeQuestion.category,
+        difficulty: activeQuestion.difficulty,
+        correct: true,
+        testsPassed: 1,
+        testsTotal: 1,
+        misconceptionId: null,
+        misconceptionName: null,
+        misconceptionConfidence: 0.95,
+        studentConfidence: 'high',
+      }).catch(() => {})
+
+      return
+    }
+
+    // WRONG ANSWER: Register attempt and escalate explanation
+    const updatedWrongs = [...prevWrongs, optIdx]
+    setWrongAttempts((prev) => ({ ...prev, [qId]: updatedWrongs }))
+    setAnswers((prev) => ({ ...prev, [qId]: optIdx }))
+
+    const attemptCount = updatedWrongs.length
+
+    // If 1st mistake -> Level 1 Guiding Socratic Hint (hide correct answer so student can try again!)
+    // If 2nd mistake -> Level 2 Deep Memory Step Trace
+    // If 3rd mistake -> Level 3 Reveal Solution & Full Conceptual Model
+    if (attemptCount === 1) {
+      setExplanationTier('pivot')
+    } else if (attemptCount === 2) {
+      setExplanationTier('trace')
+      setEscalatedQuestions((prev) => ({ ...prev, [qId]: 2 }))
+    } else {
+      setRevealedAnswers((prev) => ({ ...prev, [qId]: true }))
+      setExplanationTier('analogy')
+    }
+
+    // Adaptive DDA down on mistake
+    if (adaptiveMode && mode === 'practice') {
+      setStreak(0)
+      if (currentLevel === 'Advanced') {
+        setCurrentLevel('Intermediate')
+        setAdaptiveAlert({
+          type: 'down',
+          msg: '🎯 Scaffolding Activated: Difficulty adjusted to Intermediate to solidify core mental model.',
+        })
+      } else if (currentLevel === 'Intermediate') {
+        setCurrentLevel('Beginner')
+        setAdaptiveAlert({
+          type: 'down',
+          msg: '🎯 Foundational Support: Difficulty adjusted to Beginner to rebuild fundamental mental model.',
+        })
+      }
+    }
+
+    recordAnalyticsEvent({
+      eventType: 'mcq_assessment',
+      problemId: String(activeQuestion.id),
+      title: activeQuestion.title,
+      category: activeQuestion.category,
+      difficulty: activeQuestion.difficulty,
+      correct: false,
+      testsPassed: 0,
+      testsTotal: 1,
+      misconceptionId: `mcq_misc_${activeQuestion.id}`,
+      misconceptionName: activeQuestion.misconception,
+      misconceptionConfidence: 0.9,
+      studentConfidence: 'medium',
+    }).catch(() => {})
+  }
+
+  // Adaptive Next Question Transition
+  const handleNextQuestion = () => {
+    setAdaptiveAlert(null)
+    if (adaptiveMode && mode === 'practice') {
+      // Find next unanswered question matching currentLevel
+      let candidateIdx = -1
+      for (let i = 0; i < filteredQuestions.length; i++) {
+        const q = filteredQuestions[i]
+        if (q.difficulty === currentLevel && answers[q.id] === undefined && i !== currentIndex) {
+          candidateIdx = i
+          break
+        }
+      }
+      if (candidateIdx === -1) {
+        for (let i = 0; i < filteredQuestions.length; i++) {
+          const q = filteredQuestions[i]
+          if (answers[q.id] === undefined && i !== currentIndex) {
+            candidateIdx = i
+            break
+          }
+        }
+      }
+      if (candidateIdx !== -1) {
+        setCurrentIndex(candidateIdx)
+        setExplanationTier('pivot')
+        return
+      }
+    }
+    setCurrentIndex((i) => Math.min(activeQuestionList.length - 1, i + 1))
+    setExplanationTier('pivot')
   }
 
   // Toggle Flag
@@ -285,6 +565,9 @@ export default function McqPage() {
           </div>
 
           <div className="mcq-nav-actions">
+            <a href="#/analytics" className="btn sm" style={{ background: '#5B4BF5', color: '#fff', border: 'none' }}>
+              📈 Trends & Mastery
+            </a>
             <a href="#/live" className="btn sm white">
               ← Live Code Editor
             </a>
@@ -494,6 +777,42 @@ export default function McqPage() {
           <div className="mcq-grid">
             {/* LEFT COLUMN: Question Card */}
             <div>
+              {/* Computerized Adaptive Testing (CAT) HUD */}
+              {mode === 'practice' && (
+                <div className="mcq-adaptive-hud">
+                  <div className="mcq-adaptive-left">
+                    <span className="mcq-adaptive-label">
+                      🧠 Adaptive Intelligence:
+                    </span>
+                    <span className={`mcq-level-pill ${currentLevel.toLowerCase()}`}>
+                      Current Tier: {currentLevel}
+                    </span>
+                    {streak > 0 && (
+                      <span className="mcq-streak-pill">
+                        🔥 Streak: {streak}
+                      </span>
+                    )}
+                  </div>
+                  <button
+                    className={`mcq-adaptive-toggle ${adaptiveMode ? 'on' : ''}`}
+                    onClick={() => {
+                      setAdaptiveMode(!adaptiveMode)
+                      setAdaptiveAlert(null)
+                    }}
+                    title="Toggle Dynamic Difficulty Adjustment"
+                  >
+                    <span>{adaptiveMode ? '✓ Adaptive DDA: ON' : '○ Adaptive DDA: OFF'}</span>
+                  </button>
+                </div>
+              )}
+
+              {/* Dynamic Notification on Level Change */}
+              {adaptiveAlert && (
+                <div className={`mcq-adaptive-alert ${adaptiveAlert.type}`}>
+                  <span>{adaptiveAlert.msg}</span>
+                </div>
+              )}
+
               {activeQuestion ? (
                 <div className="mcq-card">
                   {/* Card Header Meta */}
@@ -558,6 +877,11 @@ export default function McqPage() {
                   <div className="mcq-options-list">
                     {activeQuestion.options.map((optText, optIdx) => {
                       const letter = ['A', 'B', 'C', 'D'][optIdx]
+                      const qWrongs = wrongAttempts[activeQuestion.id] || []
+                      const isRevealed = revealedAnswers[activeQuestion.id] || false
+                      const isAnswerCorrect = selectedAnswer === activeQuestion.correct
+                      const shouldShowGreen = isAnswerCorrect || isRevealed
+                      const wasWrong = qWrongs.includes(optIdx)
                       const isSelected = selectedAnswer === optIdx
                       let stateClass = ''
 
@@ -565,11 +889,10 @@ export default function McqPage() {
                         stateClass = 'selected'
                       }
 
-                      // In Practice Mode, immediately highlight correctness once answered
                       if (mode === 'practice' && hasAnswered) {
-                        if (optIdx === activeQuestion.correct) {
+                        if (shouldShowGreen && optIdx === activeQuestion.correct) {
                           stateClass = 'is-correct'
-                        } else if (isSelected && !isCorrect) {
+                        } else if (wasWrong) {
                           stateClass = 'is-wrong'
                         }
                       }
@@ -578,6 +901,7 @@ export default function McqPage() {
                         <button
                           key={optIdx}
                           className={`mcq-option-btn ${stateClass}`}
+                          disabled={mode === 'practice' && wasWrong && !shouldShowGreen}
                           onClick={() => handleSelectOption(optIdx)}
                         >
                           <span className="mcq-opt-letter">{letter}</span>
@@ -590,56 +914,272 @@ export default function McqPage() {
 
                   {/* Practice Mode Diagnostic Intelligence Feedback */}
                   {mode === 'practice' && hasAnswered && (
-                    <div className={`mcq-diag-panel ${isCorrect ? 'diag-success' : 'diag-misconception'}`}>
-                      <div className="mcq-diag-header">
-                        <div className="mcq-diag-icon">{isCorrect ? '✓' : '⚠'}</div>
-                        <div>
-                          <div className="mcq-diag-title">
-                            {isCorrect
-                              ? 'Correct! Sound Python Mental Model'
-                              : 'Misconception Diagnosed'}
-                          </div>
-                          <div style={{ fontSize: 13, opacity: 0.85, marginTop: 2 }}>
-                            {isCorrect
-                              ? 'Your execution trace matches Python semantics.'
-                              : `Triggered belief: ${activeQuestion.misconception}`}
-                          </div>
-                        </div>
-                      </div>
+                    (() => {
+                      const qWrongs = wrongAttempts[activeQuestion.id] || []
+                      const isAnswerCorrect = selectedAnswer === activeQuestion.correct
+                      const isRevealed = revealedAnswers[activeQuestion.id] || false
+                      const attemptCount = qWrongs.length
+                      const lastWrongIdx = qWrongs[qWrongs.length - 1]
 
-                      {/* Explanation of the runtime behavior */}
-                      <div className="mcq-diag-body">
-                        <p>{activeQuestion.explanation}</p>
-                      </div>
-
-                      {/* Distractor Rationale for Every Option */}
-                      {activeQuestion.distractors && (
-                        <div className="mcq-distractors-card">
-                          <strong style={{ fontSize: 13, color: 'var(--ink)' }}>
-                            Why each option was designed:
-                          </strong>
-                          {activeQuestion.options.map((_, i) => {
-                            const l = ['A', 'B', 'C', 'D'][i]
-                            const isC = i === activeQuestion.correct
-                            const reason = activeQuestion.distractors[i] || ''
-                            return (
-                              <div key={i} className="mcq-distractor-item">
-                                <span className={`opt-tag ${isC ? 'c' : 'w'}`}>Option {l}</span>
-                                <span>{reason}</span>
+                      // CASE 1: Answered Correctly OR Solution Revealed
+                      if (isAnswerCorrect || isRevealed) {
+                        return (
+                          <div className={`mcq-diag-panel ${isAnswerCorrect ? 'diag-success' : 'diag-misconception'}`}>
+                            <div className="mcq-diag-header">
+                              <div className="mcq-diag-icon">{isAnswerCorrect ? '✓' : '💡'}</div>
+                              <div>
+                                <div className="mcq-diag-title">
+                                  {isAnswerCorrect
+                                    ? (attemptCount === 0
+                                        ? 'Correct! Sound Python Mental Model'
+                                        : `Correct! Misconception Resolved on Attempt #${attemptCount + 1}`)
+                                    : 'Full Solution & Architectural Model Revealed'}
+                                </div>
+                                <div style={{ fontSize: 13, opacity: 0.85, marginTop: 2 }}>
+                                  {isAnswerCorrect
+                                    ? 'Your execution trace matches Python runtime semantics.'
+                                    : `Underlying Misconception: ${activeQuestion.misconception}`}
+                                </div>
                               </div>
-                            )
-                          })}
-                        </div>
-                      )}
+                            </div>
 
-                      {/* Targeted Takeaway */}
-                      <div className="mcq-takeaway-box">
-                        <span>💡</span>
-                        <span>
-                          <strong>Core Rule:</strong> {activeQuestion.takeaway}
-                        </span>
-                      </div>
-                    </div>
+                            {/* Multi-Tier Tabs */}
+                            <div className="mcq-tier-tabs">
+                              <button
+                                className={`mcq-tier-btn ${explanationTier === 'pivot' ? 'active' : ''}`}
+                                onClick={() => setExplanationTier('pivot')}
+                              >
+                                💡 Concept Pivot
+                              </button>
+                              <button
+                                className={`mcq-tier-btn ${explanationTier === 'trace' ? 'active' : ''}`}
+                                onClick={() => setExplanationTier('trace')}
+                              >
+                                🔍 Step Trace
+                              </button>
+                              <button
+                                className={`mcq-tier-btn ${explanationTier === 'analogy' ? 'active' : ''}`}
+                                onClick={() => setExplanationTier('analogy')}
+                              >
+                                🧠 Deep Analogy & Rule
+                              </button>
+                              {activeQuestion.distractors && (
+                                <button
+                                  className={`mcq-tier-btn ${explanationTier === 'distractors' ? 'active' : ''}`}
+                                  onClick={() => setExplanationTier('distractors')}
+                                >
+                                  🎯 Why Each Option?
+                                </button>
+                              )}
+                            </div>
+
+                            {explanationTier === 'pivot' && (
+                              <div className="mcq-diag-body">
+                                <p style={{ fontSize: 15, lineHeight: 1.6, margin: '0 0 12px' }}>{activeQuestion.explanation}</p>
+                                
+                                {activeQuestion.code.includes('print') && !activeQuestion.code.includes('return') && (
+                                  <div className="mcq-code-comparison">
+                                    <div className="mcq-code-col trap">
+                                      <span className="col-label">⚠️ Trap: Printing vs Returning</span>
+                                      <code>print(...) writes to stdout (console display). It produces NO return value for caller assignment.</code>
+                                    </div>
+                                    <div className="mcq-code-col fix">
+                                      <span className="col-label">🛡️ Fix: Explicit Return Value</span>
+                                      <code>Use explicit {`'return <value>'`} to pass data back to caller variables. Otherwise Python returns None.</code>
+                                    </div>
+                                  </div>
+                                )}
+                                {activeQuestion.category === 'Loops & Iteration' && (
+                                  <div className="mcq-code-comparison">
+                                    <div className="mcq-code-col trap">
+                                      <span className="col-label">⚠️ Common Range Trap</span>
+                                      <code>Expecting range(n) to include n, or expecting range(n) to start from 1.</code>
+                                    </div>
+                                    <div className="mcq-code-col fix">
+                                      <span className="col-label">🛡️ Python Reality</span>
+                                      <code>range(n) starts at 0 and stops at n - 1 (generating exactly n elements: 0, 1, ..., n-1).</code>
+                                    </div>
+                                  </div>
+                                )}
+                              </div>
+                            )}
+
+                            {explanationTier === 'trace' && (
+                              <div className="mcq-trace-table-wrap">
+                                <table className="mcq-trace-table">
+                                  <thead>
+                                    <tr>
+                                      <th>Execution Phase</th>
+                                      <th>Runtime Action</th>
+                                      <th>Intuition Trap</th>
+                                      <th>Python Reality</th>
+                                    </tr>
+                                  </thead>
+                                  <tbody>
+                                    {generateStepTrace(activeQuestion, lastWrongIdx).map((row, idx) => (
+                                      <tr key={idx}>
+                                        <td className="mono">{row.step}</td>
+                                        <td>{row.action}</td>
+                                        <td><span className="trap">{row.trap}</span></td>
+                                        <td><span className="reality">{row.reality}</span></td>
+                                      </tr>
+                                    ))}
+                                  </tbody>
+                                </table>
+                              </div>
+                            )}
+
+                            {explanationTier === 'analogy' && (
+                              <div className="mcq-analogy-card">
+                                <div className="mcq-analogy-header">
+                                  <span>🧠 Mental Model Analogy ({activeQuestion.category})</span>
+                                </div>
+                                <p className="mcq-analogy-text">
+                                  {CATEGORY_INSIGHTS[activeQuestion.category]?.analogy ||
+                                    "Python executes strictly by formal language semantics, independent of conversational English grammar."}
+                                </p>
+                                <div className="mcq-golden-rule">
+                                  <span>🛡️</span>
+                                  <div>
+                                    <b>Defensive Rule:</b> {CATEGORY_INSIGHTS[activeQuestion.category]?.goldenRule || activeQuestion.takeaway}
+                                  </div>
+                                </div>
+                              </div>
+                            )}
+
+                            {explanationTier === 'distractors' && activeQuestion.distractors && (
+                              <div className="mcq-distractors-card">
+                                <strong style={{ fontSize: 13, color: 'var(--ink)' }}>
+                                  Why each option was designed:
+                                </strong>
+                                {activeQuestion.options.map((_, i) => {
+                                  const l = ['A', 'B', 'C', 'D'][i]
+                                  const isC = i === activeQuestion.correct
+                                  const reason = activeQuestion.distractors[i] || ''
+                                  return (
+                                    <div key={i} className="mcq-distractor-item">
+                                      <span className={`opt-tag ${isC ? 'c' : 'w'}`}>Option {l}</span>
+                                      <span>{reason}</span>
+                                    </div>
+                                  )
+                                })}
+                              </div>
+                            )}
+
+                            <div className="mcq-takeaway-box">
+                              <span>💡</span>
+                              <span>
+                                <strong>Core Rule:</strong> {activeQuestion.takeaway}
+                              </span>
+                            </div>
+                          </div>
+                        )
+                      }
+
+                      // CASE 2: FIRST WRONG ATTEMPT -> Level 1 Guiding Socratic Hint (Green answer is hidden so they can try again!)
+                      if (attemptCount === 1) {
+                        const wrongLetter = ['A', 'B', 'C', 'D'][lastWrongIdx]
+                        const wrongReason = activeQuestion.distractors?.[lastWrongIdx]
+                        return (
+                          <div className="mcq-diag-panel diag-misconception">
+                            <div className="mcq-diag-header">
+                              <div className="mcq-diag-icon">💡</div>
+                              <div>
+                                <div className="mcq-diag-title">
+                                  Level 1 Hint — Cognitive Divergence Caught
+                                </div>
+                                <div style={{ fontSize: 13, opacity: 0.85, marginTop: 2 }}>
+                                  Not quite! Here is a targeted guiding hint to help you work it out:
+                                </div>
+                              </div>
+                            </div>
+
+                            <div className="mcq-hint-card">
+                              <span className="mcq-hint-badge">Attempt 1 / 3 • Guiding Nudge</span>
+                              <p className="mcq-hint-body">
+                                <strong>Why Option {wrongLetter} was a trap:</strong>{' '}
+                                {wrongReason || `Triggered belief: ${activeQuestion.misconception}`}
+                              </p>
+                              <div className="mcq-hint-nudge">
+                                <strong>🔍 Socratic Clue:</strong> {getSocraticHint(activeQuestion, lastWrongIdx)}
+                              </div>
+                              <div className="mcq-hint-action">
+                                <span className="mcq-retry-prompt">
+                                  <span>👉</span> Pick another option above to test your revised hypothesis!
+                                </span>
+                                <button
+                                  className="mcq-reveal-btn"
+                                  onClick={() => setRevealedAnswers((prev) => ({ ...prev, [activeQuestion.id]: true }))}
+                                >
+                                  I'm Stuck, Reveal Solution
+                                </button>
+                              </div>
+                            </div>
+                          </div>
+                        )
+                      }
+
+                      // CASE 3: SECOND WRONG ATTEMPT -> Level 2 Step-by-Step Runtime Memory Trace
+                      return (
+                        <div className="mcq-diag-panel diag-misconception">
+                          <div className="mcq-diag-header">
+                            <div className="mcq-diag-icon">🔍</div>
+                            <div>
+                              <div className="mcq-diag-title">
+                                Level 2 Escalation — Deeper Runtime Memory Trace (Attempt 2 / 3)
+                              </div>
+                              <div style={{ fontSize: 13, opacity: 0.85, marginTop: 2 }}>
+                                You missed twice. Here is a deeper breakdown of Python memory & execution:
+                              </div>
+                            </div>
+                          </div>
+
+                          <div className="mcq-escalated-banner">
+                            <span className="mcq-hint-badge" style={{ background: '#FFE6DF', color: '#B32D15' }}>
+                              Attempt 2 / 3 • Scaffolding Breakdown
+                            </span>
+                            <p style={{ margin: '8px 0 0', fontSize: 13.5, lineHeight: 1.55, color: '#3A1F18' }}>
+                              {generateEscalatedClue(activeQuestion, qWrongs)}
+                            </p>
+                          </div>
+
+                          <div className="mcq-trace-table-wrap">
+                            <table className="mcq-trace-table">
+                              <thead>
+                                <tr>
+                                  <th>Execution Phase</th>
+                                  <th>Runtime Action</th>
+                                  <th>Intuition Trap</th>
+                                  <th>Python Reality</th>
+                                </tr>
+                              </thead>
+                              <tbody>
+                                {generateStepTrace(activeQuestion, lastWrongIdx).map((row, idx) => (
+                                  <tr key={idx}>
+                                    <td className="mono">{row.step}</td>
+                                    <td>{row.action}</td>
+                                    <td><span className="trap">{row.trap}</span></td>
+                                    <td><span className="reality">{row.reality}</span></td>
+                                  </tr>
+                                ))}
+                              </tbody>
+                            </table>
+                          </div>
+
+                          <div className="mcq-hint-action" style={{ marginTop: 12 }}>
+                            <span className="mcq-retry-prompt" style={{ color: 'var(--brand)' }}>
+                              <span>👉</span> Inspect the table and select your final option above!
+                            </span>
+                            <button
+                              className="mcq-reveal-btn"
+                              onClick={() => setRevealedAnswers((prev) => ({ ...prev, [activeQuestion.id]: true }))}
+                            >
+                              Reveal Full Solution & Analogy
+                            </button>
+                          </div>
+                        </div>
+                      )
+                    })()
                   )}
 
                   {/* Card Navigation Footer */}
@@ -648,14 +1188,18 @@ export default function McqPage() {
                       <button
                         className="mcq-btn secondary"
                         disabled={currentIndex === 0}
-                        onClick={() => setCurrentIndex((i) => i - 1)}
+                        onClick={() => {
+                          setAdaptiveAlert(null)
+                          setCurrentIndex((i) => i - 1)
+                          setExplanationTier('pivot')
+                        }}
                       >
                         ← Previous
                       </button>
                       <button
                         className="mcq-btn primary"
                         disabled={currentIndex === activeQuestionList.length - 1}
-                        onClick={() => setCurrentIndex((i) => i + 1)}
+                        onClick={handleNextQuestion}
                       >
                         Next Question →
                       </button>
