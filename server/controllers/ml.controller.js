@@ -55,6 +55,19 @@ exports.submit = (req, res) => {
         difficulty: result.difficulty || "Unknown",
         correct: result.correct,
         createdAt: new Date()
+      }, "progress.misconceptionAttempts": {
+        misconceptionId: result.diagnosis?.diagnosis?.misconception_id
+          ? String(result.diagnosis.diagnosis.misconception_id) : "none",
+        description: result.diagnosis?.diagnosis?.description || "",
+        topic: result.category || "Unknown",
+        source: "Coding",
+        correct: result.correct,
+        candidates: (result.diagnosis?.candidates || []).map((candidate) => ({
+          misconceptionId: String(candidate.misconception_id),
+          description: candidate.description || "",
+          confidence: candidate.confidence || 0
+        })),
+        createdAt: new Date()
       } } });
     } catch (err) {
       console.error("Record code attempt error:", err);

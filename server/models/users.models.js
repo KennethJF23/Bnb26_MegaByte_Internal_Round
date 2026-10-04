@@ -37,6 +37,19 @@ const userSchema = mongoose.Schema(
                 difficulty: String,
                 correct: Boolean,
                 createdAt: { type: Date, default: Date.now }
+            }],
+            misconceptionAttempts: [{
+                misconceptionId: String,
+                description: String,
+                topic: String,
+                source: String,
+                correct: Boolean,
+                candidates: [{
+                    misconceptionId: String,
+                    description: String,
+                    confidence: Number
+                }],
+                createdAt: { type: Date, default: Date.now }
             }]
         },
     },

@@ -2,7 +2,7 @@ import { useEffect, useMemo, useState } from 'react'
 import { getProgress } from './api.js'
 import './profile.css'
 
-const empty = { mcqAttempts: [], codeAttempts: [] }
+const empty = { mcqAttempts: [], codeAttempts: [], misconceptionAttempts: [] }
 
 export default function ProfilePage() {
   const [profile, setProfile] = useState(null)
@@ -13,7 +13,11 @@ export default function ProfilePage() {
     getProgress()
       .then((data) => {
         setProfile(data)
-        setProgress({ mcqAttempts: data.mcqAttempts || [], codeAttempts: data.codeAttempts || [] })
+        setProgress({
+          mcqAttempts: data.mcqAttempts || [],
+          codeAttempts: data.codeAttempts || [],
+          misconceptionAttempts: data.misconceptionAttempts || [],
+        })
       })
       .catch((err) => setError(err.message))
   }, [])
@@ -76,6 +80,50 @@ export default function ProfilePage() {
     return days
   }, [activity])
 
+  const misconceptions = useMemo(() => {
+    const grouped = {}
+    for (const item of progress.misconceptionAttempts) {
+      if (item.misconceptionId === 'none') continue
+      const key = item.misconceptionId
+      if (!grouped[key]) grouped[key] = {
+        id: key, description: item.description, topic: item.topic, attempts: 0, wrong: 0, lastSeen: item.createdAt,
+      }
+      grouped[key].attempts += 1
+      grouped[key].wrong += Number(!item.correct)
+      if (item.description) grouped[key].description = item.description
+      if (item.createdAt && new Date(item.createdAt) > new Date(grouped[key].lastSeen || 0)) {
+        grouped[key].lastSeen = item.createdAt
+      }
+    }
+    return Object.values(grouped).sort((a, b) => b.wrong - a.wrong || b.attempts - a.attempts)
+  }, [progress.misconceptionAttempts])
+
+  const differentiation = useMemo(() => {
+    const grouped = {}
+    for (const attempt of progress.misconceptionAttempts) {
+      const primary = attempt.misconceptionId
+      const alternatives = (attempt.candidates || [])
+        .filter((candidate) => candidate.misconceptionId !== primary && candidate.misconceptionId !== '0')
+      if (!primary || primary === 'none' || !alternatives.length) continue
+      for (const alternative of alternatives) {
+        const key = `${primary}:${alternative.misconceptionId}`
+        if (!grouped[key]) {
+          grouped[key] = {
+            primary,
+            primaryDescription: attempt.description,
+            alternative: alternative.misconceptionId,
+            alternativeDescription: alternative.description,
+            count: 0,
+            confidence: 0,
+          }
+        }
+        grouped[key].count += 1
+        grouped[key].confidence = Math.max(grouped[key].confidence, alternative.confidence || 0)
+      }
+    }
+    return Object.values(grouped).sort((a, b) => b.count - a.count)
+  }, [progress.misconceptionAttempts])
+
   if (error) return <main className="profile-page"><p className="profile-error">{error}</p></main>
   if (!profile) return <main className="profile-page"><p>Loading your learning profile…</p></main>
 
@@ -129,10 +177,30 @@ export default function ProfilePage() {
               )
             })}
           </section>
+          <section className="profile-card profile-misconceptions">
+            <div className="profile-card-title"><span>Misconceptions tracked</span><small>{misconceptions.length} concepts</small></div>
+            {misconceptions.length === 0 && <p className="profile-muted">Misconceptions identified from incorrect answers will appear here.</p>}
+            {misconceptions.map((item) => (
+              <article className="misconception-row" key={item.id}>
+                <div className="misconception-badge">#{item.id}</div>
+                <div><strong>{item.topic}</strong><p>{item.description || 'A recurring misunderstanding detected by the learning model.'}</p><small>{item.wrong} incorrect attempt{item.wrong === 1 ? '' : 's'} · {item.attempts} total diagnosis{item.attempts === 1 ? '' : 'es'}</small></div>
+              </article>
+            ))}
+          </section>
           <section className="profile-card profile-recent">
             <div className="profile-card-title"><span>Recent activity</span><small>Latest attempts</small></div>
             {activity.recent.length === 0 && <p className="profile-muted">Your recent attempts will appear here.</p>}
             {activity.recent.map((item, index) => <div className="recent-row" key={`${item.format}-${item.label}-${index}`}><span className={`recent-icon ${item.correct ? 'recent-ok' : 'recent-wrong'}`}>{item.correct ? '✓' : '×'}</span><div><strong>{item.label}</strong><span>{item.format} · {item.topic}</span></div><small>{new Date(item.createdAt).toLocaleDateString()}</small></div>)}
+          </section>
+          <section className="profile-card profile-differentiation">
+            <div className="profile-card-title"><span>Misconception differentiation</span><small>Model alternatives</small></div>
+            {differentiation.length === 0 && <p className="profile-muted">When the model sees similar mistakes, its competing misconception candidates will appear here.</p>}
+            {differentiation.map((item) => (
+              <article className="differentiation-row" key={`${item.primary}-${item.alternative}`}>
+                <div className="differentiation-label"><span className="misconception-badge">#{item.primary}</span><span>vs</span><span className="misconception-badge muted-badge">#{item.alternative}</span></div>
+                <div><strong>Separate mental models</strong><p><b>Primary:</b> {item.primaryDescription || 'Primary diagnosed misconception.'}</p><p><b>Also considered:</b> {item.alternativeDescription || 'A similar possible misconception.'}</p><small>Compared {item.count} time{item.count === 1 ? '' : 's'} · alternative confidence {Math.round(item.confidence * 100)}%</small></div>
+              </article>
+            ))}
           </section>
         </div>
       </section>
