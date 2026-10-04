@@ -24,3 +24,8 @@ Thumbs.db
 .vscode/
 .idea/
 *.log
+
+# Large model weights - too big for GitHub (use Git LFS or store locally)
+*.pt
+new_update_model/model.pt
+server/ml_service/artifacts/transformer_v2/model.pt
