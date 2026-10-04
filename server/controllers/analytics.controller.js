@@ -1,11 +1,39 @@
-const mongoose = require("mongoose");
-const { PerformanceEvent, LearnerProfile } = require("../models/analytics.models");
+/* ============================================================================
+   Analytics + learner-model API.
 
-// In-memory fallback cache in case MongoDB is running without connection or local demo mode
-const memoryStore = {
-  events: [],
-  profiles: new Map(),
-};
+   WHAT CHANGED AND WHY
+
+   1. No more fabricated history on the normal read path.
+      getTrends used to call generateRealisticSeedHistory() whenever a learner
+      had no events, splice the result into the live store, and return it
+      indistinguishably from real data. Its misconception names ("Loop counter
+      retains mutation outside expected scope") do not exist in the 67-label
+      bank, so the dashboard showed a confident 30-day story about beliefs the
+      model cannot even emit. Seeding now happens only when explicitly asked
+      for, is built from real bank ids, and every response carries
+      `synthetic: true` so the UI can label it.
+
+   2. Misconception identity is the stable numeric id, never the prose.
+      Aggregating on misconceptionName meant any wording change forked one
+      belief into two rows.
+
+   3. Resolution state comes from lib/resolutionProtocol via lib/learnerModel —
+      one state machine, persisted. The old category-wide `consecutivePasses`
+      loop is gone entirely.
+
+   4. Recommendations come from lib/interventionEngine, selected on the
+      diagnosis and the learner's history with that belief, not `idx % 2`.
+   ========================================================================== */
+
+const mongoose = require("mongoose");
+const { PerformanceEvent } = require("../models/analytics.models");
+const learner = require("../lib/learnerModel");
+const { recommendNext } = require("../lib/interventionEngine");
+const bank = require("../lib/misconceptionBank");
+const { shapeOf } = require("../lib/resolutionProtocol");
+
+/* In-memory event mirror, used when Mongo is down (server.js starts fail-open). */
+const memoryStore = { events: [] };
 
 function resolveIdentifier(req) {
   const userId = req.user || null;
@@ -21,389 +49,422 @@ function isDbReady() {
   return mongoose.connection && mongoose.connection.readyState === 1;
 }
 
-// Compute moving velocity / trend metrics
-function computeTrendMetrics(events) {
-  if (!events || events.length === 0) {
-    return {
-      masteryIndex: 0,
-      velocityDelta: 0,
-      testPassRate: 0,
-      totalEvents: 0,
-      activeMisconceptions: 0,
-      resolvedMisconceptions: 0,
-      dailyTrend: [],
-      categoryBreakdown: {},
-      misconceptionMatrix: [],
-      metacognition: { calibrated: 0, overconfident: 0, underconfident: 0, awareError: 0 },
-    };
+function sinceFor(timeRange) {
+  const now = Date.now();
+  if (timeRange === "7d") return new Date(now - 7 * 864e5);
+  if (timeRange === "30d") return new Date(now - 30 * 864e5);
+  return null; // "all"
+}
+
+/** Read this learner's events from Mongo when possible, memory otherwise. */
+async function loadEvents({ userId, sessionKey }, { timeRange = "30d", category = "All" } = {}) {
+  const since = sinceFor(timeRange);
+  const catWanted = category && category !== "All" && category !== "All Topics" ? category : null;
+
+  if (isDbReady()) {
+    try {
+      const query = userId
+        ? { $or: [{ userId: new mongoose.Types.ObjectId(userId) }, { sessionKey }] }
+        : { sessionKey };
+      if (catWanted) query.category = catWanted;
+      if (since) query.createdAt = { $gte: since };
+      return await PerformanceEvent.find(query).sort({ createdAt: 1 }).lean();
+    } catch (err) {
+      console.warn("[analytics] mongo read failed, using memory:", err.message);
+    }
   }
 
-  // Sort chronological
+  return memoryStore.events
+    .filter((e) => {
+      const mine = e.sessionKey === sessionKey || (userId && String(e.userId) === String(userId));
+      const inCat = !catWanted || e.category === catWanted;
+      const inWindow = !since || new Date(e.createdAt) >= since;
+      return mine && inCat && inWindow;
+    })
+    .sort((a, b) => new Date(a.createdAt) - new Date(b.createdAt));
+}
+
+/* ========================= time-series from events ========================= */
+/*
+   Events carry the chronology; the learner profile carries belief state. Keeping
+   them separate is what removed the need to re-derive the state machine here.
+*/
+function computeTimeSeries(events) {
   const sorted = [...events].sort((a, b) => new Date(a.createdAt) - new Date(b.createdAt));
 
-  let totalCorrect = 0;
-  let totalTestsPassed = 0;
-  let totalTests = 0;
+  let totalCorrect = 0, testsPassed = 0, testsTotal = 0;
   const catMap = {};
-  const miscMap = {};
+  const dayMap = {};
   const metacog = { calibrated: 0, overconfident: 0, underconfident: 0, awareError: 0 };
 
-  // Daily binning
-  const dayMap = {};
-
-  sorted.forEach((e) => {
+  for (const e of sorted) {
     if (e.correct) totalCorrect++;
-    totalTestsPassed += Number(e.testsPassed || (e.correct ? 1 : 0));
-    totalTests += Number(e.testsTotal || 1);
+    testsPassed += Number(e.testsPassed || (e.correct ? 1 : 0));
+    testsTotal += Number(e.testsTotal || 1);
 
-    // Category
-    const cat = e.category || "General Logic";
-    if (!catMap[cat]) catMap[cat] = { attempted: 0, correct: 0 };
+    const cat = e.category || "Uncategorised";
+    catMap[cat] = catMap[cat] || { attempted: 0, correct: 0 };
     catMap[cat].attempted++;
     if (e.correct) catMap[cat].correct++;
 
-    // Misconception tracking
-    if (e.misconceptionName && e.misconceptionName !== "None" && !e.correct) {
-      const name = e.misconceptionName;
-      if (!miscMap[name]) {
-        miscMap[name] = {
-          name,
-          category: cat,
-          count: 0,
-          firstSeen: e.createdAt,
-          lastSeen: e.createdAt,
-          consecutivePasses: 0,
-        };
+    /* Calibration: only meaningful when the learner actually reported a
+       confidence. Unspecified is not counted as "calibrated". */
+    const conf = (e.studentConfidence || "unspecified").toLowerCase();
+    if (conf !== "unspecified") {
+      if (e.correct) {
+        if (conf === "high") metacog.calibrated++;
+        else metacog.underconfident++;
+      } else {
+        if (conf === "high") metacog.overconfident++;
+        else metacog.awareError++;
       }
-      miscMap[name].count++;
-      miscMap[name].lastSeen = e.createdAt;
-      miscMap[name].consecutivePasses = 0;
-    } else if (e.correct && e.category) {
-      // Reward consecutive passes on related category
-      Object.values(miscMap).forEach((m) => {
-        if (m.category === e.category) {
-          m.consecutivePasses = (m.consecutivePasses || 0) + 1;
-        }
-      });
     }
 
-    // Metacognition calibration
-    const conf = (e.studentConfidence || "medium").toLowerCase();
-    if (e.correct) {
-      if (conf === "high" || conf === "medium") metacog.calibrated++;
-      else metacog.underconfident++;
-    } else {
-      if (conf === "high") metacog.overconfident++;
-      else metacog.awareError++;
-    }
+    const day = new Date(e.createdAt).toISOString().slice(0, 10);
+    dayMap[day] = dayMap[day] || { date: day, attempts: 0, correct: 0, tp: 0, tt: 0 };
+    dayMap[day].attempts++;
+    if (e.correct) dayMap[day].correct++;
+    dayMap[day].tp += Number(e.testsPassed || (e.correct ? 1 : 0));
+    dayMap[day].tt += Number(e.testsTotal || 1);
+  }
 
-    // Group by Date (YYYY-MM-DD)
-    const dStr = new Date(e.createdAt).toISOString().split("T")[0];
-    if (!dayMap[dStr]) {
-      dayMap[dStr] = { date: dStr, attempts: 0, correct: 0, testsPassed: 0, testsTotal: 0 };
-    }
-    dayMap[dStr].attempts++;
-    if (e.correct) dayMap[dStr].correct++;
-    dayMap[dStr].testsPassed += Number(e.testsPassed || (e.correct ? 1 : 0));
-    dayMap[dStr].testsTotal += Number(e.testsTotal || 1);
-  });
-
-  // Calculate chronological daily trend points
   const dailyTrend = Object.values(dayMap)
     .sort((a, b) => a.date.localeCompare(b.date))
     .map((d) => ({
       date: d.date,
-      accuracy: Math.round((d.correct / d.attempts) * 100),
-      testPassRate: Math.round((d.testsPassed / Math.max(1, d.testsTotal)) * 100),
+      accuracy: Math.round((d.correct / Math.max(1, d.attempts)) * 100),
+      testPassRate: Math.round((d.tp / Math.max(1, d.tt)) * 100),
       attempts: d.attempts,
     }));
 
-  // Overall Mastery
-  const masteryIndex = Math.round((totalCorrect / sorted.length) * 100);
-  const testPassRate = Math.round((totalTestsPassed / Math.max(1, totalTests)) * 100);
-
-  // Velocity Delta (comparison of second half vs first half)
-  let velocityDelta = 0;
-  if (sorted.length >= 4) {
+  /* Velocity: second half vs first half. Needs enough points to mean anything,
+     so below 6 attempts it reports null rather than a noisy number. */
+  let velocityDelta = null;
+  if (sorted.length >= 6) {
     const half = Math.floor(sorted.length / 2);
-    const firstHalfCorrect = sorted.slice(0, half).filter((x) => x.correct).length;
-    const secondHalfCorrect = sorted.slice(half).filter((x) => x.correct).length;
-    const rate1 = firstHalfCorrect / half;
-    const rate2 = secondHalfCorrect / (sorted.length - half);
-    velocityDelta = Math.round((rate2 - rate1) * 100);
+    const r1 = sorted.slice(0, half).filter((x) => x.correct).length / half;
+    const r2 = sorted.slice(half).filter((x) => x.correct).length / (sorted.length - half);
+    velocityDelta = Math.round((r2 - r1) * 100);
   }
 
-  // Misconception Matrix status classification
-  const misconceptionMatrix = Object.values(miscMap).map((m) => {
-    let status = "active";
-    if (m.consecutivePasses >= 2) status = "eradicated";
-    else if (m.consecutivePasses === 1) status = "resolving";
-    else if (m.count >= 3) status = "entrenched";
-
-    return {
-      name: m.name,
-      category: m.category,
-      occurrences: m.count,
-      status,
-      consecutivePasses: m.consecutivePasses,
-      firstSeen: m.firstSeen,
-      lastSeen: m.lastSeen,
-    };
-  });
-
-  const activeCount = misconceptionMatrix.filter((m) => m.status === "active" || m.status === "entrenched").length;
-  const resolvedCount = misconceptionMatrix.filter((m) => m.status === "eradicated" || m.status === "resolving").length;
-
-  // Category Breakdown
   const categoryBreakdown = {};
-  Object.keys(catMap).forEach((c) => {
-    const item = catMap[c];
+  for (const [c, v] of Object.entries(catMap)) {
+    const score = Math.round((v.correct / Math.max(1, v.attempted)) * 100);
     categoryBreakdown[c] = {
-      attempted: item.attempted,
-      correct: item.correct,
-      score: Math.round((item.correct / item.attempted) * 100),
-      status: item.correct / item.attempted >= 0.8 ? "Mastered" : item.correct / item.attempted >= 0.5 ? "Proficient" : "Developing",
+      attempted: v.attempted,
+      correct: v.correct,
+      score,
+      status: score >= 80 ? "Mastered" : score >= 50 ? "Proficient" : "Developing",
     };
-  });
+  }
 
   return {
-    masteryIndex,
-    velocityDelta,
-    testPassRate,
+    accuracy: sorted.length ? Math.round((totalCorrect / sorted.length) * 100) : 0,
+    testPassRate: testsTotal ? Math.round((testsPassed / testsTotal) * 100) : 0,
     totalEvents: sorted.length,
-    activeMisconceptions: activeCount,
-    resolvedMisconceptions: resolvedCount,
+    velocityDelta,
     dailyTrend,
     categoryBreakdown,
-    misconceptionMatrix,
     metacognition: metacog,
   };
 }
 
-// 1. Record Performance Event
+/** Trackers -> the matrix the dashboard renders, with the evidence chain. */
+function misconceptionMatrix(profile) {
+  return learner.trackerList(profile).map((t) => ({
+    misconceptionId: t.misconceptionId,
+    name: t.name,
+    category: t.category,
+    occurrences: t.occurrences,
+    status: t.status,
+
+    interventionCount: t.interventionCount,
+    passes: t.passes,
+    transferPasses: t.transferPasses,
+    shapesPassed: (t.probeShapesSeen || []).length,
+    siblingSwaps: t.siblingSwaps,
+    relapses: t.relapses,
+
+    resolutionConfidence: t.resolutionConfidence,
+    outstanding: t.outstanding,
+
+    firstSeen: t.firstSeen,
+    lastSeen: t.lastSeen,
+    resolvedAt: t.resolvedAt,
+
+    confusableWith: bank.siblingsOf(t.misconceptionId).map((id) => ({
+      misconceptionId: id,
+      description: bank.describe(id),
+    })),
+
+    history: (t.history || []).slice(-8),
+  }));
+}
+
+/* ============================== 1. record =============================== */
+
 exports.recordEvent = async (req, res) => {
   try {
-    const { userId, sessionKey } = resolveIdentifier(req);
-    const {
-      eventType,
-      problemId,
-      title,
-      category,
-      difficulty,
-      correct,
-      testsPassed,
-      testsTotal,
-      misconceptionId,
-      misconceptionName,
-      misconceptionConfidence,
-      timeSpentSec,
-      studentConfidence,
-      metadata,
-    } = req.body || {};
+    const ident = resolveIdentifier(req);
+    const b = req.body || {};
 
-    if (!eventType || !title || !category || typeof correct !== "boolean") {
+    if (!b.eventType || !b.title || !b.category || typeof b.correct !== "boolean") {
       return res.status(400).json({ message: "eventType, title, category, and correct boolean are required" });
     }
 
+    /* The misconception this ITEM probes. Credit and debit attach to this id.
+       Falls back to misconceptionId (what was diagnosed) when the caller did not
+       distinguish them. */
+    const targetId = Number(b.targetsMisconceptionId ?? b.misconceptionId);
+    const hasTarget = Number.isFinite(targetId) && targetId > 0;
+    const label = hasTarget ? bank.getLabel(targetId) : null;
+
     const eventPayload = {
-      userId: userId ? new mongoose.Types.ObjectId(userId) : undefined,
-      sessionKey,
-      eventType,
-      problemId: String(problemId || "prob_custom"),
-      title,
-      category,
-      difficulty: difficulty || "Intermediate",
-      correct,
-      testsPassed: Number(testsPassed || (correct ? 1 : 0)),
-      testsTotal: Number(testsTotal || 1),
-      misconceptionId: misconceptionId ? String(misconceptionId) : null,
-      misconceptionName: misconceptionName || (correct ? null : "Identified Logic Bug"),
-      misconceptionConfidence: Number(misconceptionConfidence || 0.85),
-      timeSpentSec: Number(timeSpentSec || 30),
-      studentConfidence: studentConfidence || "medium",
-      metadata: metadata || {},
+      userId: ident.userId ? new mongoose.Types.ObjectId(ident.userId) : undefined,
+      sessionKey: ident.sessionKey,
+      eventType: b.eventType,
+      problemId: String(b.problemId || "prob_custom"),
+      title: b.title,
+      category: b.category,
+      difficulty: b.difficulty || "Intermediate",
+      correct: b.correct,
+      testsPassed: Number(b.testsPassed ?? (b.correct ? 1 : 0)),
+      testsTotal: Number(b.testsTotal ?? 1),
+
+      misconceptionId: hasTarget ? String(targetId) : null,
+      /* No invented label. The old code defaulted this to "Identified Logic Bug"
+         for any wrong answer, manufacturing a misconception record where the
+         model had produced no diagnosis. */
+      misconceptionName: label ? label.description : b.misconceptionName || null,
+      misconceptionConfidence: Number(b.misconceptionConfidence ?? 0),
+
+      targetsMisconceptionId: hasTarget ? targetId : null,
+      targeted: b.targeted !== false,
+      interventionId: b.interventionId || null,
+      attemptNumber: Number(b.attemptNumber || 1),
+      probeShape: b.probeShape || shapeOf(b),
+      chosenSibling: Number.isFinite(Number(b.chosenSibling)) ? Number(b.chosenSibling) : null,
+      engine: ["model", "rules", "learner-probe"].includes(b.engine) ? b.engine : "none",
+      ambiguous: !!b.ambiguous,
+
+      /* Only record a duration the client actually measured. The previous build
+         sent a random number, which made the metric meaningless. */
+      timeSpentSec: Number.isFinite(Number(b.timeSpentSec)) ? Number(b.timeSpentSec) : null,
+      studentConfidence: b.studentConfidence || "unspecified",
+      metadata: b.metadata || {},
       createdAt: new Date(),
     };
 
-    // Save to In-Memory store immediately
     memoryStore.events.push(eventPayload);
+    if (memoryStore.events.length > 5000) memoryStore.events.shift();
 
-    // Save to MongoDB if connected
     if (isDbReady()) {
       try {
         await PerformanceEvent.create(eventPayload);
       } catch (dbErr) {
-        console.warn("MongoDB record event write failed, preserved in memory:", dbErr.message);
+        console.warn("[analytics] event write failed, kept in memory:", dbErr.message);
       }
     }
+
+    /* Fold into the persistent learner model and hand back the updated tracker,
+       so the UI can show resolution progress without a second round trip. */
+    const profile = await learner.applyEvent(ident, {
+      correct: eventPayload.correct,
+      category: eventPayload.category,
+      targetsMisconceptionId: eventPayload.targetsMisconceptionId,
+      targeted: eventPayload.targeted,
+      chosenSibling: eventPayload.chosenSibling,
+      shape: eventPayload.probeShape,
+      interventionId: eventPayload.interventionId,
+      at: eventPayload.createdAt,
+      misconceptionName: eventPayload.misconceptionName,
+    });
+
+    const tracker = hasTarget ? profile.misconceptions[String(targetId)] || null : null;
 
     return res.status(201).json({
       success: true,
-      message: "Performance telemetry logged successfully",
-      event: eventPayload,
+      tracker: tracker
+        ? {
+            ...tracker,
+            resolutionConfidence: require("../lib/resolutionProtocol").resolutionConfidence(tracker),
+            outstanding: require("../lib/resolutionProtocol").outstandingRequirements(tracker),
+          }
+        : null,
+      profile: learner.summarise(profile),
     });
   } catch (err) {
-    console.error("Error recording performance event:", err);
-    return res.status(500).json({ message: "Failed to record performance telemetry", error: err.message });
+    console.error("[analytics] recordEvent:", err);
+    return res.status(500).json({ message: "Failed to record event", error: err.message });
   }
 };
 
-// 2. Query Production Trend Analytics
+/* ============================== 2. trends =============================== */
+
 exports.getTrends = async (req, res) => {
   try {
-    const { userId, sessionKey } = resolveIdentifier(req);
+    const ident = resolveIdentifier(req);
     const { timeRange = "30d", category = "All" } = req.query;
 
-    let userEvents = [];
+    const events = await loadEvents(ident, { timeRange, category });
+    const profile = await learner.load(ident);
+    const series = computeTimeSeries(events);
+    const matrix = misconceptionMatrix(profile);
+    const summary = learner.summarise(profile);
 
-    if (isDbReady()) {
-      try {
-        const query = {};
-        if (userId) {
-          query.$or = [{ userId: new mongoose.Types.ObjectId(userId) }, { sessionKey }];
-        } else {
-          query.sessionKey = sessionKey;
-        }
-
-        if (category && category !== "All" && category !== "All Topics") {
-          query.category = category;
-        }
-
-        // Time filter
-        const now = new Date();
-        if (timeRange === "7d") {
-          query.createdAt = { $gte: new Date(now.getTime() - 7 * 24 * 60 * 60 * 1000) };
-        } else if (timeRange === "30d") {
-          query.createdAt = { $gte: new Date(now.getTime() - 30 * 24 * 60 * 60 * 1000) };
-        }
-
-        userEvents = await PerformanceEvent.find(query).sort({ createdAt: 1 }).lean();
-      } catch (dbErr) {
-        console.warn("MongoDB read failed, falling back to memory store:", dbErr.message);
-      }
-    }
-
-    // Fallback or augment with memory events matching user
-    if (!userEvents || userEvents.length === 0) {
-      userEvents = memoryStore.events.filter((e) => {
-        const matchId = userId && String(e.userId) === String(userId);
-        const matchSession = e.sessionKey === sessionKey;
-        const matchCat = category === "All" || category === "All Topics" || e.category === category;
-        return (matchId || matchSession) && matchCat;
-      });
-    }
-
-    // If still empty, provide seeded baseline metrics so user instantly sees a rich live preview
-    if (userEvents.length === 0) {
-      const generatedSeed = generateRealisticSeedHistory(sessionKey, userId);
-      userEvents = generatedSeed;
-      memoryStore.events.push(...generatedSeed);
-    }
-
-    const metrics = computeTrendMetrics(userEvents);
+    const synthetic = events.some((e) => e.metadata && e.metadata.synthetic);
 
     return res.json({
       success: true,
       timeRange,
       category,
-      metrics,
+
+      /* Honest empty state. No backfill — if there is nothing here, the UI says
+         so and invites the learner to start, which is more useful than a
+         fictional trend line. */
+      isEmpty: events.length === 0 && matrix.length === 0,
+      synthetic,
+
+      metrics: {
+        /* mastery now reflects verified resolution, not raw accuracy */
+        masteryIndex: summary.masteryScore,
+        accuracy: series.accuracy,
+        testPassRate: series.testPassRate,
+        velocityDelta: series.velocityDelta,
+        totalEvents: series.totalEvents,
+
+        activeMisconceptions: summary.active + summary.entrenched,
+        resolvedMisconceptions: summary.eradicated,
+        resolvingMisconceptions: summary.resolving,
+        entrenchedMisconceptions: summary.entrenched,
+
+        dailyTrend: series.dailyTrend,
+        categoryBreakdown: series.categoryBreakdown,
+        misconceptionMatrix: matrix,
+        metacognition: series.metacognition,
+      },
+
+      learnerModel: {
+        ...summary,
+        domainMastery: profile.domainMastery,
+        lastActiveDate: profile.lastActiveDate,
+      },
     });
   } catch (err) {
-    console.error("Error computing trend analytics:", err);
-    return res.status(500).json({ message: "Failed to compute trend analytics", error: err.message });
+    console.error("[analytics] getTrends:", err);
+    return res.status(500).json({ message: "Failed to compute trends", error: err.message });
   }
 };
 
-// 3. Prescriptive Targeted Interventions
+/* ========================= 3. recommendations ========================== */
+
 exports.getRecommendations = async (req, res) => {
   try {
-    const { userId, sessionKey } = resolveIdentifier(req);
-    let events = memoryStore.events.filter((e) => e.sessionKey === sessionKey || (userId && String(e.userId) === String(userId)));
+    const ident = resolveIdentifier(req);
+    const profile = await learner.load(ident);
+    const trackers = learner.trackerList(profile);
 
-    if (isDbReady()) {
-      try {
-        const dbEvents = await PerformanceEvent.find({
-          $or: [{ sessionKey }, ...(userId ? [{ userId }] : [])],
-        }).lean();
-        if (dbEvents && dbEvents.length > 0) events = dbEvents;
-      } catch (err) {
-        // proceed with memory
-      }
-    }
+    const seenItemIds = Array.isArray(req.query.seen)
+      ? req.query.seen
+      : typeof req.query.seen === "string"
+      ? req.query.seen.split(",").filter(Boolean)
+      : [];
 
-    const metrics = computeTrendMetrics(events);
-    const activeMiscs = metrics.misconceptionMatrix.filter((m) => m.status === "entrenched" || m.status === "active");
+    const interventions = recommendNext(trackers, { limit: 3, seenItemIds });
 
-    const recommendations = [];
-
-    if (activeMiscs.length > 0) {
-      activeMiscs.slice(0, 3).forEach((m, idx) => {
-        recommendations.push({
-          id: `rec_${idx + 1}`,
-          priority: m.status === "entrenched" ? "CRITICAL" : "RECOMMENDED",
-          title: `Eradicate: ${m.name}`,
-          category: m.category,
-          type: idx % 2 === 0 ? "mcq" : "code",
-          reason: `Misconception detected ${m.occurrences} time(s). Targeted practice is required to verify permanent resolution.`,
-          actionUrl: idx % 2 === 0 ? `#/mcq` : `#/live`,
-          estimatedMin: 5,
-        });
-      });
-    } else {
-      recommendations.push({
-        id: "rec_mastery",
-        priority: "ADVANCE",
-        title: "Advanced Data Structures & Recursion Depth",
-        category: "Functions & Recursion",
-        type: "code",
-        reason: "All primary misconceptions have been resolved. Test boundary cases on nested recursive trees.",
-        actionUrl: "#/live",
-        estimatedMin: 10,
+    if (interventions.length === 0) {
+      const anySeen = trackers.length > 0;
+      return res.json({
+        success: true,
+        recommendations: [],
+        /* Say what is actually true rather than asserting mastery. A learner
+           with no diagnosed misconceptions has not proven anything yet. */
+        emptyReason: anySeen
+          ? "Every diagnosed misconception has been verified as resolved. Nothing is queued."
+          : "No misconception has been diagnosed yet. Answer a few diagnostic items to build the learner model.",
+        nextStep: anySeen ? null : { label: "Start the MCQ diagnostic", url: "#/mcq" },
       });
     }
 
-    return res.json({ success: true, recommendations });
+    return res.json({
+      success: true,
+      recommendations: interventions.map((iv) => ({
+        id: iv.interventionId,
+        misconceptionId: iv.misconceptionId,
+        priority:
+          iv.tier === 4 ? "CRITICAL" : iv.tier === 3 ? "VERIFY" : iv.tier === 2 ? "DISCRIMINATE" : "TEACH",
+        title: iv.misconception,
+        category: iv.category,
+        tier: iv.tier,
+        tierName: iv.tierName,
+        goal: iv.goal,
+        /* modality follows the item the engine actually chose */
+        type: iv.item ? "mcq" : "explanation",
+        actionUrl: iv.item ? `#/mcq?q=${encodeURIComponent(iv.item.id)}` : "#/mcq",
+        estimatedMin: iv.estimatedMin,
+        reason: iv.rationale.why.join(" · "),
+        itemChoice: iv.rationale.itemChoice,
+        confusableWith: iv.confusableWith,
+        outstanding: iv.outstanding,
+        resolutionConfidence: iv.resolutionConfidence,
+        hints: iv.hints,
+        item: iv.item,
+      })),
+    });
   } catch (err) {
-    return res.status(500).json({ message: "Error fetching recommendations", error: err.message });
+    console.error("[analytics] getRecommendations:", err);
+    return res.status(500).json({ message: "Error building recommendations", error: err.message });
   }
 };
 
-// 4. Export Complete Performance Audit Report
+/* ============================== 4. export ============================== */
+
 exports.exportReport = async (req, res) => {
   try {
-    const { userId, sessionKey } = resolveIdentifier(req);
-    let events = memoryStore.events.filter((e) => e.sessionKey === sessionKey || (userId && String(e.userId) === String(userId)));
-
-    if (isDbReady()) {
-      try {
-        const dbEvents = await PerformanceEvent.find({
-          $or: [{ sessionKey }, ...(userId ? [{ userId }] : [])],
-        }).lean();
-        if (dbEvents && dbEvents.length > 0) events = dbEvents;
-      } catch (err) {}
-    }
-
-    const metrics = computeTrendMetrics(events);
+    const ident = resolveIdentifier(req);
+    const events = await loadEvents(ident, { timeRange: "all", category: "All" });
+    const profile = await learner.load(ident);
+    const series = computeTimeSeries(events);
+    const summary = learner.summarise(profile);
+    const matrix = misconceptionMatrix(profile);
 
     const report = {
       exportTimestamp: new Date().toISOString(),
-      studentSession: sessionKey,
-      userId: userId || "Anonymous Learner",
-      executiveSummary: {
-        overallMasteryScore: `${metrics.masteryIndex}%`,
-        learningVelocityTrend: `${metrics.velocityDelta >= 0 ? "+" : ""}${metrics.velocityDelta}%`,
-        testPassEfficiency: `${metrics.testPassRate}%`,
-        totalSubmissionsTracked: metrics.totalEvents,
-        activeMisconceptions: metrics.activeMisconceptions,
-        resolvedMisconceptions: metrics.resolvedMisconceptions,
+      learner: {
+        session: ident.sessionKey,
+        userId: ident.userId || "guest",
+        storage: summary.storage,
+        persisted: summary.persisted,
       },
-      misconceptionTrajectory: metrics.misconceptionMatrix,
-      domainMasteryBreakdown: metrics.categoryBreakdown,
-      chronologicalVelocity: metrics.dailyTrend,
-      rawEventsCount: events.length,
+      executiveSummary: {
+        masteryScore: `${summary.masteryScore}%`,
+        rawAccuracy: `${series.accuracy}%`,
+        testPassRate: `${series.testPassRate}%`,
+        learningVelocity: series.velocityDelta === null ? "insufficient data" : `${series.velocityDelta >= 0 ? "+" : ""}${series.velocityDelta}%`,
+        attemptsRecorded: series.totalEvents,
+        misconceptionsDiagnosed: summary.misconceptionsSeen,
+        verifiedResolved: summary.eradicated,
+        stillOpen: summary.active + summary.entrenched,
+        relapses: summary.relapses,
+        beliefSwaps: summary.siblingSwaps,
+      },
+      /* The standard being applied, stated in the export so a reader knows what
+         "resolved" means here. */
+      resolutionStandard: {
+        retestsRequired: require("../lib/resolutionProtocol").PASSES_TO_RESOLVE,
+        transferRequired: 1,
+        note: "A misconception is only credited by items that probe it directly, and must survive a change of item shape. Selecting a sibling misconception's distractor withholds credit.",
+      },
+      misconceptionTrajectory: matrix,
+      domainMastery: series.categoryBreakdown,
+      chronology: series.dailyTrend,
+      calibration: series.metacognition,
+      modelCoverage: bank.coverage(),
+      rawEventCount: events.length,
+      containsSyntheticData: events.some((e) => e.metadata && e.metadata.synthetic),
     };
 
-    res.setHeader("Content-Disposition", 'attachment; filename="ReLearn_Student_Trend_Analysis.json"');
+    res.setHeader("Content-Disposition", 'attachment; filename="ReLearn_Learner_Report.json"');
     res.setHeader("Content-Type", "application/json");
     return res.send(JSON.stringify(report, null, 2));
   } catch (err) {
@@ -411,111 +472,174 @@ exports.exportReport = async (req, res) => {
   }
 };
 
-// 5. Seed Realistic 30-Day Learning Arc (Demo / Testing)
+/* ============================ 5. seed demo ============================= */
+/*
+   Explicit, opt-in, and labelled. Built from REAL bank ids and pushed through
+   the real resolution protocol, so the resulting dashboard is a genuine
+   consequence of the state machine rather than a hand-drawn picture of one.
+*/
+const DEMO_SCRIPT = [
+  // misconceptionId, dayOffset, correct, shape, note
+  { id: 1,  day: 26, correct: false, shape: "mcq#1" },
+  { id: 1,  day: 25, correct: false, shape: "code#3" },
+  { id: 13, day: 24, correct: false, shape: "mcq#17" },
+  { id: 6,  day: 22, correct: false, shape: "mcq#11" },
+  { id: 1,  day: 20, intervention: true },
+  { id: 1,  day: 19, correct: true,  shape: "mcq#1" },
+  { id: 1,  day: 18, correct: true,  shape: "code#3" },   // transfer -> eradicated
+  { id: 13, day: 16, intervention: true },
+  { id: 13, day: 15, correct: true,  shape: "mcq#17" },
+  { id: 13, day: 14, correct: true,  shape: "mcq#17" },   // no transfer yet -> resolving
+  { id: 6,  day: 12, intervention: true },
+  { id: 6,  day: 11, correct: true,  shape: "mcq#11", chosenSibling: 8 }, // belief swap
+  { id: 6,  day: 9,  correct: false, shape: "mcq#11" },
+  { id: 63, day: 7,  correct: false, shape: "mcq#80" },
+  { id: 63, day: 6,  correct: false, shape: "mcq#80" },
+  { id: 63, day: 5,  correct: false, shape: "code#12" },  // -> entrenched
+  { id: 15, day: 4,  correct: false, shape: "mcq#21" },
+  { id: 15, day: 3,  intervention: true },
+  { id: 15, day: 2,  correct: true,  shape: "mcq#21" },
+  { id: 15, day: 1,  correct: true,  shape: "code#9" },   // transfer -> eradicated
+];
+
 exports.seedDemoData = async (req, res) => {
   try {
-    const { userId, sessionKey } = resolveIdentifier(req);
-    const demoEvents = generateRealisticSeedHistory(sessionKey, userId);
+    const ident = resolveIdentifier(req);
+    const dayMs = 864e5;
+    const now = Date.now();
 
-    memoryStore.events = memoryStore.events.filter((e) => e.sessionKey !== sessionKey);
-    memoryStore.events.push(...demoEvents);
+    // start from a clean slate so the script's outcome is deterministic
+    memoryStore.events = memoryStore.events.filter((e) => e.sessionKey !== ident.sessionKey);
+    if (isDbReady()) {
+      try {
+        await PerformanceEvent.deleteMany({ sessionKey: ident.sessionKey });
+      } catch (err) {
+        console.warn("[analytics] seed cleanup skipped:", err.message);
+      }
+    }
+    await learner.resetProfile(ident);
+
+    const created = [];
+    for (const step of DEMO_SCRIPT) {
+      const at = new Date(now - step.day * dayMs);
+      const label = bank.getLabel(step.id);
+
+      if (step.intervention) {
+        await learner.markInterventionDelivered(ident, {
+          misconceptionId: step.id,
+          interventionId: `iv_${step.id}_demo`,
+          at,
+        });
+        continue;
+      }
+
+      const payload = {
+        userId: ident.userId ? new mongoose.Types.ObjectId(ident.userId) : undefined,
+        sessionKey: ident.sessionKey,
+        eventType: step.shape.startsWith("code") ? "code_submission" : "mcq_assessment",
+        problemId: step.shape.replace(/^\D+/, ""),
+        title: label ? label.description.slice(0, 70) : `Misconception #${step.id}`,
+        category: label ? label.category : "Uncategorised",
+        difficulty: "Intermediate",
+        correct: !!step.correct,
+        testsPassed: step.correct ? 5 : 2,
+        testsTotal: 5,
+        misconceptionId: String(step.id),
+        misconceptionName: label ? label.description : null,
+        misconceptionConfidence: step.correct ? 0 : 0.62,
+        targetsMisconceptionId: step.id,
+        targeted: true,
+        interventionId: `iv_${step.id}_demo`,
+        probeShape: step.shape,
+        chosenSibling: step.chosenSibling || null,
+        engine: "model",
+        ambiguous: false,
+        timeSpentSec: null,
+        studentConfidence: "unspecified",
+        // the flag that keeps this distinguishable from real history, forever
+        metadata: { synthetic: true, seededAt: new Date().toISOString() },
+        createdAt: at,
+      };
+
+      memoryStore.events.push(payload);
+      created.push(payload);
+
+      await learner.applyEvent(ident, {
+        correct: payload.correct,
+        category: payload.category,
+        targetsMisconceptionId: step.id,
+        targeted: true,
+        chosenSibling: step.chosenSibling || null,
+        shape: step.shape,
+        interventionId: payload.interventionId,
+        at,
+      });
+    }
 
     if (isDbReady()) {
       try {
-        await PerformanceEvent.deleteMany({ sessionKey });
-        await PerformanceEvent.insertMany(demoEvents);
+        await PerformanceEvent.insertMany(created);
       } catch (err) {
-        console.warn("DB seed write skipped:", err.message);
+        console.warn("[analytics] seed write skipped:", err.message);
       }
     }
 
+    const profile = await learner.load(ident);
     return res.json({
       success: true,
-      message: "Seeded 28 realistic historical trend data points over 30 days",
-      count: demoEvents.length,
+      synthetic: true,
+      message: `Seeded ${created.length} synthetic attempts across ${new Set(DEMO_SCRIPT.map((s) => s.id)).size} real misconceptions. Every resulting status was produced by the live resolution protocol.`,
+      count: created.length,
+      outcome: learner.summarise(profile),
     });
   } catch (err) {
-    return res.status(500).json({ message: "Error seeding data", error: err.message });
+    console.error("[analytics] seedDemoData:", err);
+    return res.status(500).json({ message: "Error seeding demo data", error: err.message });
   }
 };
 
-// 6. Reset Analytics Data
+/* ============================== 6. reset =============================== */
+
 exports.resetData = async (req, res) => {
   try {
-    const { userId, sessionKey } = resolveIdentifier(req);
-    memoryStore.events = memoryStore.events.filter((e) => e.sessionKey !== sessionKey);
+    const ident = resolveIdentifier(req);
+    memoryStore.events = memoryStore.events.filter((e) => e.sessionKey !== ident.sessionKey);
 
     if (isDbReady()) {
       try {
-        await PerformanceEvent.deleteMany({ sessionKey });
-      } catch (err) {}
+        await PerformanceEvent.deleteMany({ sessionKey: ident.sessionKey });
+      } catch (err) {
+        console.warn("[analytics] reset delete skipped:", err.message);
+      }
     }
+    await learner.resetProfile(ident);
 
-    return res.json({ success: true, message: "Learner analytics data reset successfully" });
+    return res.json({ success: true, message: "Learner model and event history cleared." });
   } catch (err) {
     return res.status(500).json({ message: "Error resetting data", error: err.message });
   }
 };
 
-// Helper: Generates an authentic learning trajectory with typical CS misconceptions
-function generateRealisticSeedHistory(sessionKey, userId) {
-  const events = [];
-  const now = Date.now();
-  const dayMs = 24 * 60 * 60 * 1000;
-
-  const sampleTrajectory = [
-    // Week 1: Stumbling on loop variable mutation & off-by-one
-    { dayOffset: 28, cat: "Loops & Iteration", title: "Cumulative Counter", correct: false, misc: "Loop counter retains mutation outside expected scope", conf: "high" },
-    { dayOffset: 27, cat: "Loops & Iteration", title: "Array Accumulator", correct: false, misc: "Loop counter retains mutation outside expected scope", conf: "high" },
-    { dayOffset: 25, cat: "Conditionals & Logic", title: "Boundary Threshold", correct: true, misc: null, conf: "medium" },
-    { dayOffset: 24, cat: "Loops & Iteration", title: "Range Iterator", correct: false, misc: "Range(n) excludes upper boundary end index", conf: "medium" },
-    { dayOffset: 22, cat: "Lists & Memory References", title: "List Duplication", correct: false, misc: "Assignment operator copies list reference instead of deep value", conf: "high" },
-
-    // Week 2: Targeted intervention begins, early resolution of loop mutation
-    { dayOffset: 20, cat: "Loops & Iteration", title: "Targeted Re-assessment: Loop Bounds", correct: true, misc: null, conf: "high" },
-    { dayOffset: 19, cat: "Loops & Iteration", title: "Re:Check Loop Scoping", correct: true, misc: null, conf: "high" }, // Resolving loop scoping
-    { dayOffset: 18, cat: "Variables & Operators", title: "Integer Division", correct: true, misc: null, conf: "high" },
-    { dayOffset: 16, cat: "Lists & Memory References", title: "Slice Shallow Copy", correct: false, misc: "Assignment operator copies list reference instead of deep value", conf: "medium" },
-    { dayOffset: 15, cat: "Functions & Recursion", title: "Recursive Factorial", correct: false, misc: "Missing base case return value triggers NoneType propagation", conf: "high" },
-
-    // Week 3: Recursion base case & memory reference interventions
-    { dayOffset: 14, cat: "Functions & Recursion", title: "Fibonacci Memoized", correct: false, misc: "Missing base case return value triggers NoneType propagation", conf: "medium" },
-    { dayOffset: 12, cat: "Lists & Memory References", title: "Intervention: List Clone", correct: true, misc: null, conf: "medium" },
-    { dayOffset: 11, cat: "Strings & Immutability", title: "String In-Place Replace", correct: false, misc: "String methods assumed to mutate original string in-place", conf: "high" },
-    { dayOffset: 10, cat: "Lists & Memory References", title: "Re:Check Matrix 2D Ref", correct: true, misc: null, conf: "high" }, // Eradicated list ref bug!
-    { dayOffset: 8, cat: "Functions & Recursion", title: "Intervention: Base Case Return", correct: true, misc: null, conf: "high" },
-
-    // Week 4: High velocity mastery phase
-    { dayOffset: 7, cat: "Functions & Recursion", title: "Verified Resolution: Recursive Sum", correct: true, misc: null, conf: "high" },
-    { dayOffset: 6, cat: "Strings & Immutability", title: "Immutable Concatenation", correct: true, misc: null, conf: "high" },
-    { dayOffset: 5, cat: "OOP & Data Structures", title: "Class Instance Attribute", correct: false, misc: "Mutable default argument shared across all instances", conf: "medium" },
-    { dayOffset: 4, cat: "Loops & Iteration", title: "Nested Matrix Traversal", correct: true, misc: null, conf: "high" },
-    { dayOffset: 3, cat: "Conditionals & Logic", title: "Short Circuit Boolean", correct: true, misc: null, conf: "high" },
-    { dayOffset: 2, cat: "OOP & Data Structures", title: "Intervention: Factory Default", correct: true, misc: null, conf: "high" },
-    { dayOffset: 1, cat: "Functions & Recursion", title: "Binary Search Recursion", correct: true, misc: null, conf: "high" },
-    { dayOffset: 0, cat: "Lists & Memory References", title: "Deepcopy Dictionary Graph", correct: true, misc: null, conf: "high" },
-  ];
-
-  sampleTrajectory.forEach((s, idx) => {
-    events.push({
-      userId: userId ? new mongoose.Types.ObjectId(userId) : undefined,
-      sessionKey,
-      eventType: idx % 2 === 0 ? "mcq_assessment" : "code_submission",
-      problemId: `prob_${100 + idx}`,
-      title: s.title,
-      category: s.cat,
-      difficulty: idx > 15 ? "Advanced" : idx > 8 ? "Intermediate" : "Beginner",
-      correct: s.correct,
-      testsPassed: s.correct ? 5 : 2,
-      testsTotal: 5,
-      misconceptionId: s.misc ? `misc_${idx}` : null,
-      misconceptionName: s.misc,
-      misconceptionConfidence: s.misc ? 0.91 : 0.2,
-      timeSpentSec: Math.floor(25 + Math.random() * 45),
-      studentConfidence: s.conf,
-      createdAt: new Date(now - s.dayOffset * dayMs - Math.floor(Math.random() * 3600000)),
+/* ========================= 7. learner model read ======================= */
+/*
+   The learner model as its own resource. The brief asks the system to "track
+   recurring misconceptions and demonstrated understanding across attempts", so
+   that record deserves a first-class endpoint rather than living only as a
+   by-product of the trends aggregation.
+*/
+exports.getLearnerModel = async (req, res) => {
+  try {
+    const ident = resolveIdentifier(req);
+    const profile = await learner.load(ident);
+    return res.json({
+      success: true,
+      summary: learner.summarise(profile),
+      domainMastery: profile.domainMastery,
+      misconceptions: misconceptionMatrix(profile),
+      activeDays: profile.activeDays,
+      lastActiveDate: profile.lastActiveDate,
     });
-  });
-
-  return events;
-}
+  } catch (err) {
+    return res.status(500).json({ message: "Error reading learner model", error: err.message });
+  }
+};

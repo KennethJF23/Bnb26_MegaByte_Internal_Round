@@ -18,7 +18,7 @@ app.get("/", (req, res) => {
   res.send("Homepage is working");
 });
 
-const connectDB = require("./config/dB");
+const connectDB = require("./config/db");
 const PORT = process.env.PORT || 5000;
 
 connectDB()

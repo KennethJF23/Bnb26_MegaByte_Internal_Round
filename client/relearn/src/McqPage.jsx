@@ -1,6 +1,6 @@
 import { useState, useEffect, useMemo, useRef } from 'react'
 import { MCQ_BANK } from './data/mcqQuestions.js'
-import { recordAnalyticsEvent } from './api.js'
+import { recordAnalyticsEvent, markInterventionDelivered } from './api.js'
 import './mcq.css'
 
 const CATEGORIES = [
@@ -202,6 +202,36 @@ export default function McqPage() {
     localStorage.setItem('relearn_mcq_flagged', JSON.stringify(flagged))
   }, [flagged])
 
+  // Support deep-linking from Performance Trends & recommendations: #/mcq?q=mcq-5 or ?misconceptionId=8
+  useEffect(() => {
+    const handleUrlTarget = () => {
+      const hash = window.location.hash || ''
+      const queryPart = hash.includes('?') ? hash.split('?')[1] : ''
+      if (!queryPart) return
+      const params = new URLSearchParams(queryPart)
+      const targetQId = params.get('q')
+      const targetMiscId = params.get('misconceptionId')
+
+      if (targetQId || targetMiscId) {
+        const foundIdx = MCQ_BANK.findIndex((q) => {
+          if (targetQId && q.id === targetQId) return true
+          if (targetMiscId && q.misconception_id === Number(targetMiscId)) return true
+          return false
+        })
+        if (foundIdx !== -1) {
+          setSelectedCategory('All Topics')
+          setSelectedDifficulty('All Difficulties')
+          setOnlyMistakes(false)
+          setSearchQuery('')
+          setCurrentIndex(foundIdx)
+        }
+      }
+    }
+    handleUrlTarget()
+    window.addEventListener('hashchange', handleUrlTarget)
+    return () => window.removeEventListener('hashchange', handleUrlTarget)
+  }, [])
+
   // Filtered Questions list for Practice Mode
   const filteredQuestions = useMemo(() => {
     return MCQ_BANK.filter((q) => {
@@ -342,8 +372,9 @@ export default function McqPage() {
         correct: true,
         testsPassed: 1,
         testsTotal: 1,
-        misconceptionId: null,
-        misconceptionName: null,
+        targetsMisconceptionId: activeQuestion.misconception_id,
+        misconceptionId: activeQuestion.misconception_id ? String(activeQuestion.misconception_id) : null,
+        misconceptionName: activeQuestion.misconception || null,
         misconceptionConfidence: 0.95,
         studentConfidence: 'high',
       }).catch(() => {})
@@ -389,6 +420,14 @@ export default function McqPage() {
       }
     }
 
+    // Notify backend learner model that an intervention was presented
+    if (activeQuestion.misconception_id) {
+      markInterventionDelivered(
+        activeQuestion.misconception_id,
+        `mcq_${activeQuestion.id}_tier_${attemptCount}`
+      ).catch(() => {})
+    }
+
     recordAnalyticsEvent({
       eventType: 'mcq_assessment',
       problemId: String(activeQuestion.id),
@@ -398,7 +437,8 @@ export default function McqPage() {
       correct: false,
       testsPassed: 0,
       testsTotal: 1,
-      misconceptionId: `mcq_misc_${activeQuestion.id}`,
+      targetsMisconceptionId: activeQuestion.misconception_id,
+      misconceptionId: activeQuestion.misconception_id ? String(activeQuestion.misconception_id) : null,
       misconceptionName: activeQuestion.misconception,
       misconceptionConfidence: 0.9,
       studentConfidence: 'medium',

@@ -68,6 +68,16 @@ export const getInterventionRecommendations = () => {
   return call(`/api/analytics/recommendations?${q}`, { headers: analyticsHeaders() })
 }
 
+export const getLearnerModel = () => {
+  const q = new URLSearchParams({ sessionKey: getGuestSessionKey() }).toString()
+  return call(`/api/analytics/learner-model?${q}`, { headers: analyticsHeaders() })
+}
+
+export const exportAnalyticsReport = () => {
+  const q = new URLSearchParams({ sessionKey: getGuestSessionKey() }).toString()
+  return call(`/api/analytics/export?${q}`, { headers: analyticsHeaders() })
+}
+
 export const seedAnalyticsDemo = () =>
   call('/api/analytics/seed-demo', {
     method: 'POST',
@@ -81,3 +91,38 @@ export const resetAnalyticsData = () =>
     headers: { 'Content-Type': 'application/json', ...analyticsHeaders() },
     body: JSON.stringify({ sessionKey: getGuestSessionKey() }),
   })
+
+export const diagnoseSnippet = (code, evidence = null) =>
+  call('/api/ml/diagnose', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', ...analyticsHeaders() },
+    body: JSON.stringify({ code, evidence }),
+  })
+
+export const resolveProbe = (probe, chosenMisconceptionId) =>
+  call('/api/ml/probe', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', ...analyticsHeaders() },
+    body: JSON.stringify({ probe, chosenMisconceptionId }),
+  })
+
+export const markInterventionDelivered = (misconceptionId, interventionId = null) =>
+  call('/api/ml/intervention/delivered', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', ...analyticsHeaders() },
+    body: JSON.stringify({ misconceptionId, interventionId }),
+  })
+
+export const getMlMetrics = () =>
+  call('/api/ml/metrics', { headers: analyticsHeaders() })
+
+export const getMisconceptionBank = () =>
+  call('/api/ml/bank', { headers: analyticsHeaders() })
+
+export const getQuestions = (misconceptionId, category) => {
+  const params = new URLSearchParams()
+  if (misconceptionId) params.set('misconceptionId', misconceptionId)
+  if (category) params.set('category', category)
+  const qs = params.toString() ? `?${params.toString()}` : ''
+  return call(`/api/ml/questions${qs}`, { headers: analyticsHeaders() })
+}

@@ -62,6 +62,61 @@ const performanceEventSchema = new mongoose.Schema(
       type: Number,
       default: 0,
     },
+
+    /* ---------------------------------------------------------------------
+       Resolution-protocol fields. Without these there is no way to tell a
+       first encounter from a post-intervention retest, which is why the old
+       build had to fall back on crediting a whole category.
+       ------------------------------------------------------------------ */
+
+    /** The misconception this ITEM probes, as a stable number. Credit or debit
+        is applied to this id, never to a category and never to free text. */
+    targetsMisconceptionId: {
+      type: Number,
+      default: null,
+      index: true,
+    },
+    /** False when the item does not probe the tracked belief, so it must not
+        count as evidence either way. */
+    targeted: {
+      type: Boolean,
+      default: true,
+    },
+    /** Links a retest back to the intervention it is verifying. */
+    interventionId: {
+      type: String,
+      default: null,
+      index: true,
+    },
+    /** 1 = pre-intervention diagnosis, 2+ = reassessment rounds. */
+    attemptNumber: {
+      type: Number,
+      default: 1,
+    },
+    /** Item shape, used to enforce the transfer requirement (a correction has
+        to survive a change of surface form, not just a repeat of one item). */
+    probeShape: {
+      type: String,
+      default: null,
+    },
+    /** Set when a wrong choice maps onto a SIBLING misconception — the learner
+        swapped one belief for an adjacent one rather than resolving it. */
+    chosenSibling: {
+      type: Number,
+      default: null,
+    },
+    /** Which diagnoser produced this: the trained classifier, the rule-based
+        fallback, or the learner's own probe answer. */
+    engine: {
+      type: String,
+      enum: ["model", "rules", "learner-probe", "none"],
+      default: "none",
+    },
+    /** True when the diagnosis could not be separated from its twin. */
+    ambiguous: {
+      type: Boolean,
+      default: false,
+    },
     timeSpentSec: {
       type: Number,
       default: 30,
@@ -113,6 +168,12 @@ const learnerProfileSchema = new mongoose.Schema(
       type: Number,
       default: 1,
     },
+    /** ISO yyyy-mm-dd stamps of days with activity. streakDays is derived from
+        this rather than guessed, so it survives gaps and restarts. */
+    activeDays: {
+      type: [String],
+      default: [],
+    },
     lastActiveDate: {
       type: Date,
       default: Date.now,
@@ -129,21 +190,62 @@ const learnerProfileSchema = new mongoose.Schema(
       ),
       default: {},
     },
+    /* ---------------------------------------------------------------------
+       Per-misconception state, keyed by the stable numeric id as a string.
+       This is the authoritative learner model: the state machine in
+       lib/resolutionProtocol.js owns these fields and nothing else writes
+       them, so the four statuses have exactly one definition.
+       ------------------------------------------------------------------ */
     misconceptionTracker: {
       type: Map,
       of: new mongoose.Schema(
         {
+          misconceptionId: { type: Number, required: true },
           name: String,
           category: String,
-          count: { type: Number, default: 0 },
-          firstSeen: { type: Date, default: Date.now },
-          lastSeen: { type: Date, default: Date.now },
+
+          occurrences: { type: Number, default: 0 },
+          firstSeen: { type: Date, default: null },
+          lastSeen: { type: Date, default: null },
+
+          interventionCount: { type: Number, default: 0 },
+          lastInterventionAt: { type: Date, default: null },
+          lastInterventionId: { type: String, default: null },
+
+          /** Qualifying correct retests since the last intervention. */
+          passes: { type: Number, default: 0 },
+          /** Of those, how many were on a different item shape. */
+          transferPasses: { type: Number, default: 0 },
+          /** Distinct shapes passed, so transfer can be verified not assumed. */
+          probeShapesSeen: { type: [String], default: [] },
+          /** Times the learner swapped in a neighbouring belief. */
+          siblingSwaps: { type: Number, default: 0 },
+          /** Times it came back after being cleared. */
+          relapses: { type: Number, default: 0 },
+
           status: {
             type: String,
             enum: ["entrenched", "active", "resolving", "eradicated"],
             default: "active",
           },
-          consecutivePasses: { type: Number, default: 0 },
+          resolvedAt: { type: Date, default: null },
+
+          /** Append-only evidence chain behind the current status. */
+          history: {
+            type: [
+              new mongoose.Schema(
+                {
+                  at: { type: Date, default: Date.now },
+                  verdict: String,
+                  detail: String,
+                  shape: String,
+                  interventionId: String,
+                },
+                { _id: false }
+              ),
+            ],
+            default: [],
+          },
         },
         { _id: false }
       ),
