@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
-import { getIntervention, getProblems, submitCode } from './api.js'
+import { getIntervention, getModelHealth, getProblems, submitCode } from './api.js'
 import './live.css'
 
 const pct = (x) => `${Math.round(x * 100)}%`
@@ -8,6 +8,12 @@ const tidy = (s) => s.replace(/^#+\s*/gm, '').replace(/```[a-z]*\n?/g, '').repla
 const CATEGORIES = ['All Topics', 'Arrays & Lists', 'Strings', 'Math & Number Theory', 'Searching & Sorting', 'Recursion & Backtracking', 'Data Structures', 'Logic & Control Flow']
 const DIFFICULTIES = ['All Difficulties', 'Beginner', 'Intermediate', 'Advanced']
 const difficulty = (problem) => problem.n_tests >= 8 ? 'Advanced' : problem.n_tests >= 4 ? 'Intermediate' : 'Beginner'
+
+const MODEL_LABELS = {
+  baseline: { label: 'Baseline', desc: 'TF-IDF + Logistic Regression (fast, lightweight)', icon: '⚡' },
+  transformer: { label: 'Transformer v1', desc: 'UniXcoder fine-tuned (original)', icon: '🔬' },
+  transformer_v2: { label: 'Transformer v2', desc: 'UniXcoder fine-tuned (new – your trained model)', icon: '🚀' },
+}
 
 export default function LivePage() {
   const [problems, setProblems] = useState([])
@@ -29,6 +35,9 @@ export default function LivePage() {
   })
   const [explanationLevel, setExplanationLevel] = useState('standard')
   const [adaptiveBusy, setAdaptiveBusy] = useState(false)
+  const [selectedModel, setSelectedModel] = useState(null) // null = server default
+  const [availableModels, setAvailableModels] = useState([])
+  const [defaultModel, setDefaultModel] = useState('')
   const taRef = useRef(null)
 
   useEffect(() => {
@@ -39,6 +48,9 @@ export default function LivePage() {
     getProblems()
       .then((ps) => { setProblems(ps); if (ps.length) { setPid(ps[0].id); setCode(ps[0].starter) } })
       .catch((e) => setErr(e.message))
+    getModelHealth()
+      .then((h) => { setAvailableModels(h.backends || []); setDefaultModel(h.default || '') })
+      .catch(() => {})
   }, [])
 
   const filteredProblems = useMemo(() => problems.filter((p) => {
@@ -116,7 +128,7 @@ export default function LivePage() {
   const submit = async () => {
     setBusy(true); setErr(''); setRes(null); setTab('result')
     try {
-      const result = await submitCode(pid, code)
+      const result = await submitCode(pid, code, selectedModel)
       setRes(result)
       const wrongStreak = result.correct ? 0 : (attemptHistory[pid] || []).reduceRight(
         (streak, attempt) => (attempt.correct ? 0 : streak + 1), 0,
@@ -280,6 +292,13 @@ export default function LivePage() {
                       <div className="live-diagnosis-body">
                         <p>{res.correct ? 'All tests passed, so the implementation follows the expected behavior.' : `The solution failed ${res.total - res.passed} of ${res.total} tests. The model compared the code with known misconception patterns.`}</p>
                         {top && !noKnown && <p className="live-confidence">Confidence {pct(top.confidence)}</p>}
+                        {d?.model_used && (
+                          <p style={{ marginTop: 6 }}>
+                            <span className="model-used-badge">
+                              {MODEL_LABELS[d.model_used]?.icon || '🤖'} {MODEL_LABELS[d.model_used]?.label || d.model_used}
+                            </span>
+                          </p>
+                        )}
                       </div>
                       <div className="live-candidates">
                         <strong>Why this result was identified:</strong>
@@ -303,6 +322,30 @@ export default function LivePage() {
             </section>
           </main>
           <aside className="live-sidebar">
+            {availableModels.length > 0 && (
+              <div className="live-sidebar-card model-switcher-card">
+                <div className="live-sidebar-title"><span>🧠 Model</span><span className="model-badge-sm">{(selectedModel || defaultModel).replace('_', ' ')}</span></div>
+                <p style={{ fontSize: 12, color: 'var(--muted)', marginBottom: 8 }}>Choose which AI model diagnoses your code</p>
+                {availableModels.map((m) => {
+                  const info = MODEL_LABELS[m] || { label: m, desc: '', icon: '🤖' }
+                  const active = (selectedModel || defaultModel) === m
+                  return (
+                    <button
+                      key={m}
+                      className={`model-option-btn${active ? ' active' : ''}`}
+                      onClick={() => setSelectedModel(m)}
+                    >
+                      <span className="model-opt-icon">{info.icon}</span>
+                      <span className="model-opt-body">
+                        <strong>{info.label}</strong>
+                        <small>{info.desc}</small>
+                      </span>
+                      {active && <span className="model-opt-check">✓</span>}
+                    </button>
+                  )
+                })}
+              </div>
+            )}
             <div className="live-sidebar-card">
               <div className="live-sidebar-title"><span>Problem Navigator</span><span>{filteredProblems.length}</span></div>
               <div className="live-progress"><i style={{ width: `${filteredProblems.length ? ((currentIndex + 1) / filteredProblems.length) * 100 : 0}%` }} /></div>

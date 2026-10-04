@@ -39,11 +39,14 @@ exports.intervention = (req, res) => {
 
 exports.submit = (req, res) => {
   const { problem_id, code } = req.body || {};
+  // model preference forwarded from frontend via query param or body
+  const model = req.query.model || req.body.model || null;
   if (!Number.isInteger(problem_id) || typeof code !== "string" || !code.trim()) {
     return res.status(400).json({ message: "problem_id and code are required" });
   }
   if (code.length > 5000) return res.status(413).json({ message: "Code is too long (max 5000 characters)" });
-  return forward(res, "/submit", {
+  const mlPath = model ? `/submit?model=${encodeURIComponent(model)}` : "/submit";
+  return forward(res, mlPath, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ problem_id, code }),
@@ -61,6 +64,7 @@ exports.submit = (req, res) => {
         description: result.diagnosis?.diagnosis?.description || "",
         topic: result.category || "Unknown",
         source: "Coding",
+        modelUsed: result.diagnosis?.model_used || "unknown",
         correct: result.correct,
         candidates: (result.diagnosis?.candidates || []).map((candidate) => ({
           misconceptionId: String(candidate.misconception_id),
@@ -76,3 +80,17 @@ exports.submit = (req, res) => {
 };
 
 exports.health = (req, res) => forward(res, "/health");
+
+exports.diagnose = (req, res) => {
+  const { code } = req.body || {};
+  const model = req.query.model || req.body.model || null;
+  if (typeof code !== "string" || !code.trim()) {
+    return res.status(400).json({ message: "code is required" });
+  }
+  const mlPath = model ? `/diagnose?model=${encodeURIComponent(model)}` : "/diagnose";
+  return forward(res, mlPath, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ code }),
+  });
+};

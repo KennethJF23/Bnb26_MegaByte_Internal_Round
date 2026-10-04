@@ -1,6 +1,6 @@
 import { useState, useEffect, useMemo, useRef } from 'react'
 import { MCQ_BANK } from './data/mcqQuestions.js'
-import { getIntervention, recordMcqAttempt } from './api.js'
+import { getIntervention, getModelHealth, recordMcqAttempt, diagnoseCode } from './api.js'
 import './mcq.css'
 
 const CATEGORIES = [
@@ -63,6 +63,12 @@ export default function McqPage() {
   const [streak, setStreak] = useState(0)
   const [adaptiveAlert, setAdaptiveAlert] = useState(null)
 
+  // Model Switcher State
+  const [selectedModel, setSelectedModel] = useState(null) // null = server default
+  const [availableModels, setAvailableModels] = useState([])
+  const [defaultModel, setDefaultModel] = useState('')
+  const [showModelPicker, setShowModelPicker] = useState(false)
+
   // Assessment / Timed Exam Mode State
   const [examStarted, setExamStarted] = useState(false)
   const [examQuestions, setExamQuestions] = useState([])
@@ -82,6 +88,12 @@ export default function McqPage() {
   useEffect(() => {
     localStorage.setItem('relearn_mcq_attempt_history', JSON.stringify(attemptHistory))
   }, [attemptHistory])
+
+  useEffect(() => {
+    getModelHealth()
+      .then((h) => { setAvailableModels(h.backends || []); setDefaultModel(h.default || '') })
+      .catch(() => {})
+  }, [])
 
   // Filtered Questions list for Practice Mode
   const filteredQuestions = useMemo(() => {
@@ -717,6 +729,33 @@ export default function McqPage() {
                       </span>
                     )}
                   </div>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                    {availableModels.length > 0 && (
+                      <div style={{ position: 'relative' }}>
+                        <button
+                          className="mcq-model-pill"
+                          onClick={() => setShowModelPicker((v) => !v)}
+                          title="Switch AI diagnosis model"
+                        >
+                          {selectedModel === 'transformer_v2' ? '🚀' : selectedModel === 'transformer' ? '🔬' : '⚡'}
+                          {' '}{(selectedModel || defaultModel).replace(/_/g, ' ') || 'Model'}
+                          {' ▾'}
+                        </button>
+                        {showModelPicker && (
+                          <div className="mcq-model-dropdown">
+                            {availableModels.map((m) => (
+                              <button
+                                key={m}
+                                className={`mcq-model-option${(selectedModel || defaultModel) === m ? ' active' : ''}`}
+                                onClick={() => { setSelectedModel(m); setShowModelPicker(false) }}
+                              >
+                                {m === 'transformer_v2' ? '🚀 Transformer v2 (new)' : m === 'transformer' ? '🔬 Transformer v1' : '⚡ Baseline'}
+                              </button>
+                            ))}
+                          </div>
+                        )}
+                      </div>
+                    )}
                   <button
                     className={`mcq-adaptive-toggle ${adaptiveMode ? 'on' : ''}`}
                     onClick={() => {
@@ -727,6 +766,7 @@ export default function McqPage() {
                   >
                     <span>{adaptiveMode ? '✓ Adaptive DDA: ON' : '○ Adaptive DDA: OFF'}</span>
                   </button>
+                  </div>
                 </div>
               )}
 
