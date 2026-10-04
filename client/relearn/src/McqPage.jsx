@@ -57,6 +57,12 @@ export default function McqPage() {
   const [feedbackVisible, setFeedbackVisible] = useState(false)
   const [interventionLevels, setInterventionLevels] = useState({})
 
+  // Computerized Adaptive Testing (CAT / DDA) State
+  const [adaptiveMode, setAdaptiveMode] = useState(true)
+  const [currentLevel, setCurrentLevel] = useState('Intermediate') // 'Beginner' | 'Intermediate' | 'Advanced'
+  const [streak, setStreak] = useState(0)
+  const [adaptiveAlert, setAdaptiveAlert] = useState(null)
+
   // Assessment / Timed Exam Mode State
   const [examStarted, setExamStarted] = useState(false)
   const [examQuestions, setExamQuestions] = useState([])
@@ -173,6 +179,47 @@ export default function McqPage() {
       [activeQuestion.id]: optIdx,
     }))
     if (previousAnswer !== optIdx) {
+      // Dynamic Difficulty Adjustment (DDA)
+      if (adaptiveMode && mode === 'practice') {
+        if (isCorrect) {
+          const nextStreak = streak + 1
+          setStreak(nextStreak)
+          if (currentLevel === 'Beginner') {
+            setCurrentLevel('Intermediate')
+            setAdaptiveAlert({
+              type: 'up',
+              msg: '🚀 Promoted! Difficulty increased to Intermediate — testing real-world code structures.',
+            })
+          } else if (currentLevel === 'Intermediate' && nextStreak >= 1) {
+            setCurrentLevel('Advanced')
+            setAdaptiveAlert({
+              type: 'up',
+              msg: '🔥 Mastery Level Up! Promoted to Advanced — testing complex edge cases.',
+            })
+          } else {
+            setAdaptiveAlert({
+              type: 'up',
+              msg: `⚡ Excellent! Streak: ${nextStreak} in Advanced tier!`,
+            })
+          }
+        } else {
+          setStreak(0)
+          if (currentLevel === 'Advanced') {
+            setCurrentLevel('Intermediate')
+            setAdaptiveAlert({
+              type: 'down',
+              msg: '🎯 Scaffolding Activated: Difficulty adjusted to Intermediate to solidify core mental model.',
+            })
+          } else if (currentLevel === 'Intermediate') {
+            setCurrentLevel('Beginner')
+            setAdaptiveAlert({
+              type: 'down',
+              msg: '🎯 Foundational Support: Difficulty adjusted to Beginner to rebuild fundamental mental model.',
+            })
+          }
+        }
+      }
+
       const wrongStreak = optIdx === activeQuestion.correct
         ? 0
         : (attemptHistory[activeQuestion.id] || []).reduceRight(
@@ -243,13 +290,35 @@ export default function McqPage() {
     return candidates[0]?.index ?? currentIndex
   }
 
-  const goToNextQuestion = () => {
+  // Adaptive Next Question Transition
+  const handleNextQuestion = () => {
+    setAdaptiveAlert(null)
     setFeedbackVisible(true)
-    if (mode === 'practice') {
-      getNextAdaptiveIndex().then(setCurrentIndex)
-    } else {
-      setCurrentIndex((i) => i + 1)
+    if (adaptiveMode && mode === 'practice') {
+      // Find next unanswered question matching currentLevel
+      let candidateIdx = -1
+      for (let i = 0; i < filteredQuestions.length; i++) {
+        const q = filteredQuestions[i]
+        if (q.difficulty === currentLevel && answers[q.id] === undefined && i !== currentIndex) {
+          candidateIdx = i
+          break
+        }
+      }
+      if (candidateIdx === -1) {
+        for (let i = 0; i < filteredQuestions.length; i++) {
+          const q = filteredQuestions[i]
+          if (answers[q.id] === undefined && i !== currentIndex) {
+            candidateIdx = i
+            break
+          }
+        }
+      }
+      if (candidateIdx !== -1) {
+        setCurrentIndex(candidateIdx)
+        return
+      }
     }
+    setCurrentIndex((i) => Math.min(activeQuestionList.length - 1, i + 1))
   }
 
   const getExplanation = (question) => {
@@ -280,6 +349,7 @@ export default function McqPage() {
   const clearCurrentAnswer = () => {
     if (!activeQuestion) return
     setFeedbackVisible(false)
+    setAdaptiveAlert(null)
     setAnswers((prev) => {
       const copy = { ...prev }
       delete copy[activeQuestion.id]
@@ -293,6 +363,9 @@ export default function McqPage() {
       setAnswers({})
       setFlagged({})
       setAttemptHistory({})
+      setStreak(0)
+      setCurrentLevel('Intermediate')
+      setAdaptiveAlert(null)
       localStorage.removeItem('relearn_mcq_answers')
       localStorage.removeItem('relearn_mcq_flagged')
       localStorage.removeItem('relearn_mcq_attempt_history')
@@ -318,10 +391,11 @@ export default function McqPage() {
           mode === 'practice' ||
           currentIndex < activeQuestionList.length - 1
         ) {
-          goToNextQuestion()
+          handleNextQuestion()
         }
       } else if (e.key === 'ArrowLeft' || e.key === 'p') {
         if (currentIndex > 0) {
+          setAdaptiveAlert(null)
           setCurrentIndex((i) => i - 1)
         }
       } else if (['1', '2', '3', '4'].includes(e.key)) {
@@ -617,6 +691,42 @@ export default function McqPage() {
           <div className="mcq-grid">
             {/* LEFT COLUMN: Question Card */}
             <div>
+              {/* Computerized Adaptive Testing (CAT / DDA) HUD */}
+              {mode === 'practice' && (
+                <div className="mcq-adaptive-hud">
+                  <div className="mcq-adaptive-left">
+                    <span className="mcq-adaptive-label">
+                      🧠 Adaptive Intelligence:
+                    </span>
+                    <span className={`mcq-level-pill ${currentLevel.toLowerCase()}`}>
+                      Current Tier: {currentLevel}
+                    </span>
+                    {streak > 0 && (
+                      <span className="mcq-streak-pill">
+                        🔥 Streak: {streak}
+                      </span>
+                    )}
+                  </div>
+                  <button
+                    className={`mcq-adaptive-toggle ${adaptiveMode ? 'on' : ''}`}
+                    onClick={() => {
+                      setAdaptiveMode(!adaptiveMode)
+                      setAdaptiveAlert(null)
+                    }}
+                    title="Toggle Dynamic Difficulty Adjustment"
+                  >
+                    <span>{adaptiveMode ? '✓ Adaptive DDA: ON' : '○ Adaptive DDA: OFF'}</span>
+                  </button>
+                </div>
+              )}
+
+              {/* Dynamic Notification on Level Change */}
+              {adaptiveAlert && (
+                <div className={`mcq-adaptive-alert ${adaptiveAlert.type}`}>
+                  <span>{adaptiveAlert.msg}</span>
+                </div>
+              )}
+
               {activeQuestion ? (
                 <div className="mcq-card">
                   {/* Card Header Meta */}
@@ -772,6 +882,7 @@ export default function McqPage() {
                         className="mcq-btn secondary"
                         disabled={currentIndex === 0}
                         onClick={() => {
+                          setAdaptiveAlert(null)
                           setFeedbackVisible(true)
                           setCurrentIndex((i) => i - 1)
                         }}
@@ -785,11 +896,9 @@ export default function McqPage() {
                             ? currentIndex === activeQuestionList.length - 1
                             : activeQuestionList.length < 2
                         }
-                        onClick={() => {
-                          goToNextQuestion()
-                        }}
+                        onClick={handleNextQuestion}
                       >
-                        {mode === 'practice' ? 'Next Adaptive Question →' : 'Next Question →'}
+                        Next Question →
                       </button>
                     </div>
 
@@ -893,6 +1002,7 @@ export default function McqPage() {
                         key={q.id}
                         className={`mcq-pal-btn ${btnClass}`}
                         onClick={() => {
+                          setAdaptiveAlert(null)
                           setFeedbackVisible(true)
                           setCurrentIndex(idx)
                         }}
