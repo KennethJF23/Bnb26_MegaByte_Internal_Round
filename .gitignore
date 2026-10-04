@@ -27,5 +27,6 @@ Thumbs.db
 
 # Large model weights - too big for GitHub (use Git LFS or store locally)
 *.pt
-new_update_model/model.pt
+new_update_model/
+new_update_model.zip
 server/ml_service/artifacts/transformer_v2/model.pt
