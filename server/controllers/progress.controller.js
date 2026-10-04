@@ -16,7 +16,8 @@ exports.getProgress = async (req, res) => {
             username: user.username,
             email: user.email,
             mcqAttempts: user.progress?.mcqAttempts || [],
-            codeAttempts: user.progress?.codeAttempts || []
+            codeAttempts: user.progress?.codeAttempts || [],
+            misconceptionAttempts: user.progress?.misconceptionAttempts || []
         });
     } catch (err) {
         console.error("Get progress error:", err);
@@ -35,6 +36,14 @@ exports.recordMcqAttempt = async (req, res) => {
             topic: attempt.topic,
             difficulty: typeof attempt.difficulty === "string" ? attempt.difficulty : "Unknown",
             correct: attempt.correct,
+            createdAt: new Date()
+        }, "progress.misconceptionAttempts": {
+            misconceptionId: attempt.misconceptionId ? String(attempt.misconceptionId) : "none",
+            description: typeof attempt.misconceptionDescription === "string" ? attempt.misconceptionDescription : "",
+            topic: attempt.topic,
+            source: "MCQ",
+            correct: attempt.correct,
+            candidates: Array.isArray(attempt.candidates) ? attempt.candidates.slice(0, 3) : [],
             createdAt: new Date()
         } } });
         return res.status(201).json({ saved: true });

@@ -191,6 +191,8 @@ export default function McqPage() {
         topic: activeQuestion.category,
         difficulty: activeQuestion.difficulty,
         correct: optIdx === activeQuestion.correct,
+        misconceptionId: optIdx === activeQuestion.correct ? null : activeQuestion.misconception_id,
+        misconceptionDescription: optIdx === activeQuestion.correct ? '' : activeQuestion.misconception,
       }).catch((error) => console.error('Could not sync MCQ attempt:', error))
       setAttemptHistory((prev) => ({
         ...prev,

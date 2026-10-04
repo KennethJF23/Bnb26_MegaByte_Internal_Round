@@ -93,8 +93,24 @@ def diagnose(r: Req):
             example=details.get("example", ""),
             confidence=round(float(p[i]), 4),
         ))
-    return dict(diagnosis=out[0] if p[top[0]] >= tau else None,
-                uncertain=bool(p[top[0]] < tau), candidates=out)
+    primary = out[0] if p[top[0]] >= tau else None
+    alternatives = [
+        candidate for candidate in out[1:]
+        if primary and candidate["misconception_id"] != primary["misconception_id"]
+    ]
+    return dict(
+        diagnosis=primary,
+        uncertain=bool(p[top[0]] < tau),
+        candidates=out,
+        differentiation={
+            "primary_id": primary["misconception_id"] if primary else None,
+            "alternatives": alternatives,
+            "message": (
+                "The model compared multiple misconception patterns before selecting the primary diagnosis."
+                if alternatives else "No competing misconception had sufficient evidence."
+            ),
+        },
+    )
 
 
 @app.get("/problems")
