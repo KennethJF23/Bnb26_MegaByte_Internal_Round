@@ -172,16 +172,24 @@ export default function McqPage() {
   // Handle Option Selection
   const handleSelectOption = (optIdx) => {
     if (!activeQuestion) return
+    const isCurrentChoiceCorrect = optIdx === activeQuestion.correct
     setFeedbackVisible(true)
     const previousAnswer = answers[activeQuestion.id]
+
+    // If user already answered correctly, don't re-penalize or re-adjust
+    if (previousAnswer !== undefined && previousAnswer === activeQuestion.correct) {
+      return
+    }
+
     setAnswers((prev) => ({
       ...prev,
       [activeQuestion.id]: optIdx,
     }))
+
     if (previousAnswer !== optIdx) {
       // Dynamic Difficulty Adjustment (DDA)
       if (adaptiveMode && mode === 'practice') {
-        if (isCorrect) {
+        if (isCurrentChoiceCorrect) {
           const nextStreak = streak + 1
           setStreak(nextStreak)
           if (currentLevel === 'Beginner') {
@@ -216,20 +224,25 @@ export default function McqPage() {
               type: 'down',
               msg: '🎯 Foundational Support: Difficulty adjusted to Beginner to rebuild fundamental mental model.',
             })
+          } else {
+            setAdaptiveAlert({
+              type: 'down',
+              msg: '🎯 Foundational Support: Solidifying Beginner fundamentals.',
+            })
           }
         }
       }
 
-      const wrongStreak = optIdx === activeQuestion.correct
+      const wrongStreak = isCurrentChoiceCorrect
         ? 0
         : (attemptHistory[activeQuestion.id] || []).reduceRight(
           (streak, attempt) => (attempt.correct ? 0 : streak + 1), 0,
         ) + 1
       getIntervention({
         current_difficulty: activeQuestion.difficulty,
-        correct: optIdx === activeQuestion.correct,
+        correct: isCurrentChoiceCorrect,
         wrong_streak: wrongStreak,
-        confidence: optIdx === activeQuestion.correct ? 1 : 0,
+        confidence: isCurrentChoiceCorrect ? 1 : 0,
       }).then((data) => setInterventionLevels((prev) => ({
         ...prev, [activeQuestion.id]: data.explanation_level,
       }))).catch((error) => console.error('Could not load intervention:', error))
@@ -237,9 +250,9 @@ export default function McqPage() {
         questionId: activeQuestion.id,
         topic: activeQuestion.category,
         difficulty: activeQuestion.difficulty,
-        correct: optIdx === activeQuestion.correct,
-        misconceptionId: optIdx === activeQuestion.correct ? null : activeQuestion.misconception_id,
-        misconceptionDescription: optIdx === activeQuestion.correct ? '' : activeQuestion.misconception,
+        correct: isCurrentChoiceCorrect,
+        misconceptionId: isCurrentChoiceCorrect ? null : activeQuestion.misconception_id,
+        misconceptionDescription: isCurrentChoiceCorrect ? '' : activeQuestion.misconception,
       }).catch((error) => console.error('Could not sync MCQ attempt:', error))
       setAttemptHistory((prev) => ({
         ...prev,
@@ -247,7 +260,7 @@ export default function McqPage() {
           ...(prev[activeQuestion.id] || []),
           {
             answer: optIdx,
-            correct: optIdx === activeQuestion.correct,
+            correct: isCurrentChoiceCorrect,
           },
         ],
       }))
@@ -295,27 +308,24 @@ export default function McqPage() {
     setAdaptiveAlert(null)
     setFeedbackVisible(true)
     if (adaptiveMode && mode === 'practice') {
-      // Find next unanswered question matching currentLevel
-      let candidateIdx = -1
-      for (let i = 0; i < filteredQuestions.length; i++) {
-        const q = filteredQuestions[i]
-        if (q.difficulty === currentLevel && answers[q.id] === undefined && i !== currentIndex) {
-          candidateIdx = i
-          break
+      const len = filteredQuestions.length
+      // 1. Find next unanswered question matching currentLevel (forward first, then wrap)
+      for (let step = 1; step < len; step++) {
+        const idx = (currentIndex + step) % len
+        const q = filteredQuestions[idx]
+        if (q.difficulty === currentLevel && answers[q.id] === undefined) {
+          setCurrentIndex(idx)
+          return
         }
       }
-      if (candidateIdx === -1) {
-        for (let i = 0; i < filteredQuestions.length; i++) {
-          const q = filteredQuestions[i]
-          if (answers[q.id] === undefined && i !== currentIndex) {
-            candidateIdx = i
-            break
-          }
+      // 2. Fallback: find any next unanswered question (forward first, then wrap)
+      for (let step = 1; step < len; step++) {
+        const idx = (currentIndex + step) % len
+        const q = filteredQuestions[idx]
+        if (answers[q.id] === undefined) {
+          setCurrentIndex(idx)
+          return
         }
-      }
-      if (candidateIdx !== -1) {
-        setCurrentIndex(candidateIdx)
-        return
       }
     }
     setCurrentIndex((i) => Math.min(activeQuestionList.length - 1, i + 1))
