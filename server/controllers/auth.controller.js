@@ -4,8 +4,8 @@ const bcrypt = require("bcrypt");
 const User = require("../models/users.models");
 
 
-const generateToken = (id) => {
-    return jwt.sign({id},process.env.JWT_SECRET,{expiresIn:"7d"});
+const generateToken = (id, role) => {
+    return jwt.sign({id, role},process.env.JWT_SECRET,{expiresIn:"7d"});
 }
 
 exports.register = async (req,res) => {
@@ -27,14 +27,16 @@ exports.register = async (req,res) => {
         const user = await User.create({
             username,
             email,
-            password:hashPassword
+            password:hashPassword,
+            role: process.env.ADMIN_EMAIL && email.toLowerCase() === process.env.ADMIN_EMAIL.toLowerCase() ? "admin" : "user"
         })
 
         res.status(201).json({
             id:user._id,
             username:user.username,
             email:user.email,
-            token:generateToken(user._id)
+            role:user.role,
+            token:generateToken(user._id, user.role)
         })
 
     }catch(err){
@@ -77,7 +79,8 @@ exports.login = async (req,res) => {
             id:user._id,
             username:user.username,
             email:user.email,
-            token:generateToken(user._id)
+            role:user.role,
+            token:generateToken(user._id, user.role)
         });
 
     }catch(err){

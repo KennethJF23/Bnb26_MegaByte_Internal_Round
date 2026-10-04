@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
-import { getProblems, submitCode } from './api.js'
+import { getIntervention, getProblems, submitCode } from './api.js'
 import './live.css'
 
 const pct = (x) => `${Math.round(x * 100)}%`
@@ -20,7 +20,20 @@ export default function LivePage() {
   const [selectedCategory, setSelectedCategory] = useState('All Topics')
   const [selectedDifficulty, setSelectedDifficulty] = useState('All Difficulties')
   const [searchQuery, setSearchQuery] = useState('')
+  const [attemptHistory, setAttemptHistory] = useState(() => {
+    try {
+      return JSON.parse(localStorage.getItem('relearn_code_attempt_history') || '{}')
+    } catch {
+      return {}
+    }
+  })
+  const [explanationLevel, setExplanationLevel] = useState('standard')
+  const [adaptiveBusy, setAdaptiveBusy] = useState(false)
   const taRef = useRef(null)
+
+  useEffect(() => {
+    localStorage.setItem('relearn_code_attempt_history', JSON.stringify(attemptHistory))
+  }, [attemptHistory])
 
   useEffect(() => {
     getProblems()
@@ -54,9 +67,72 @@ export default function LivePage() {
     if (next) choose(next.id)
   }
 
+  const getNextAdaptiveProblem = async (wasCorrect) => {
+    if (!problem || filteredProblems.length < 2) return null
+    let targetDifficulty = difficulty(problem)
+    try {
+      const intervention = await getIntervention({
+        current_difficulty: difficulty(problem),
+        correct: wasCorrect,
+        wrong_streak: wasCorrect ? 0 : (attemptHistory[pid] || []).reduceRight(
+          (streak, attempt) => (attempt.correct ? 0 : streak + 1), 0,
+        ),
+        confidence: res?.diagnosis?.diagnosis?.confidence || 0,
+      })
+      targetDifficulty = intervention.target_difficulty
+    } catch (error) {
+      console.error('Could not load adaptive intervention:', error)
+    }
+    const candidates = filteredProblems
+      .map((item, index) => ({ item, index }))
+      .filter(({ index }) => index !== currentIndex)
+      .sort((a, b) => {
+        const aAnswered = (attemptHistory[a.item.id] || []).length > 0
+        const bAnswered = (attemptHistory[b.item.id] || []).length > 0
+        return Number(aAnswered) - Number(bAnswered) ||
+          Number(difficulty(a.item) !== targetDifficulty) -
+          Number(difficulty(b.item) !== targetDifficulty) ||
+          a.index - b.index
+      })
+    return candidates[0]?.item || null
+  }
+
+  const goToNextProblem = async () => {
+    if (filteredProblems.length < 2 || adaptiveBusy) return
+    if (!res) {
+      const next = filteredProblems[currentIndex + 1]
+      if (next) choose(next.id)
+      return
+    }
+    setAdaptiveBusy(true)
+    try {
+      const next = await getNextAdaptiveProblem(res.correct)
+      if (next && next.id !== pid) choose(next.id)
+    } finally {
+      setAdaptiveBusy(false)
+    }
+  }
+
   const submit = async () => {
     setBusy(true); setErr(''); setRes(null); setTab('result')
-    try { setRes(await submitCode(pid, code)) }
+    try {
+      const result = await submitCode(pid, code)
+      setRes(result)
+      const wrongStreak = result.correct ? 0 : (attemptHistory[pid] || []).reduceRight(
+        (streak, attempt) => (attempt.correct ? 0 : streak + 1), 0,
+      ) + 1
+      getIntervention({
+        current_difficulty: difficulty(problem),
+        correct: result.correct,
+        wrong_streak: wrongStreak,
+        confidence: result.diagnosis?.diagnosis?.confidence || 0,
+      }).then((data) => setExplanationLevel(data.explanation_level))
+        .catch((error) => console.error('Could not load explanation intervention:', error))
+      setAttemptHistory((prev) => ({
+        ...prev,
+        [pid]: [...(prev[pid] || []), { correct: result.correct }],
+      }))
+    }
     catch (e) { setErr(e.message) }
     finally { setBusy(false) }
   }
@@ -76,6 +152,12 @@ export default function LivePage() {
   const d = res?.diagnosis
   const top = d?.candidates?.[0]
   const noKnown = d && !d.uncertain && d.diagnosis?.misconception_id === 0
+  const misconceptionText = d?.diagnosis?.description || top?.description
+  const simplifiedMisconception = explanationLevel === 'very_simple'
+    ? `Let's make it very simple: ${misconceptionText} The core rule is to make every test case pass.`
+    : explanationLevel === 'simple'
+      ? `Let's simplify it: ${misconceptionText} Check the expected value for each failing test and adjust the logic.`
+      : misconceptionText
 
   return (
     <div className="live">
@@ -83,6 +165,7 @@ export default function LivePage() {
         <a href="#top" className="logo">Re<b>:</b>Learn</a>
         <div style={{ display: 'flex', gap: 10, alignItems: 'center' }}>
           <a href="#/mcq" className="btn sm" style={{ background: 'var(--brand)', color: 'var(--white)', border: 'none' }}>MCQ Bank (100 Qs)</a>
+          <a href="#/profile" className="btn sm white">My Profile</a>
           <a href="#top" className="btn sm white back">← Back home</a>
         </div>
       </div></nav>
@@ -134,7 +217,13 @@ export default function LivePage() {
                 </p>
                 <div className="live-card-nav">
                   <button className="btn white" disabled={currentIndex === 0} onClick={() => move(-1)}>← Previous</button>
-                  <button className="btn white" disabled={currentIndex === filteredProblems.length - 1} onClick={() => move(1)}>Next →</button>
+                  <button
+                    className="btn white"
+                    disabled={filteredProblems.length < 2 || adaptiveBusy}
+                    onClick={goToNextProblem}
+                  >
+                    {adaptiveBusy ? 'Choosing…' : res ? 'Next Adaptive Problem →' : 'Next →'}
+                  </button>
                 </div>
               </>}
               {!filteredProblems.length && <div className="live-empty"><h5>No problems match these filters</h5><button className="btn primary" onClick={() => { setSelectedCategory('All Topics'); setSelectedDifficulty('All Difficulties'); setSearchQuery('') }}>Reset Filters</button></div>}
@@ -185,7 +274,7 @@ export default function LivePage() {
                         <div className="live-diagnosis-icon">{noKnown || d.uncertain ? '✓' : '⚠'}</div>
                         <div>
                           <h4>{noKnown ? 'Correct! Sound Python Mental Model' : d.uncertain ? 'No Confirmed Misconception' : 'Misconception Diagnosed'}</h4>
-                          <p>{noKnown ? 'Your execution trace matches the expected Python behavior.' : d.uncertain ? 'The submitted code does not match a known misconception confidently enough.' : d.diagnosis?.description}</p>
+                          <p>{noKnown ? 'Your execution trace matches the expected Python behavior.' : d.uncertain ? 'The submitted code does not match a known misconception confidently enough.' : simplifiedMisconception}</p>
                         </div>
                       </div>
                       <div className="live-diagnosis-body">

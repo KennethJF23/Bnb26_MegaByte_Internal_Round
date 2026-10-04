@@ -107,6 +107,33 @@ class Submit(BaseModel):
     code: str
 
 
+class Intervention(BaseModel):
+    current_difficulty: str
+    correct: bool
+    wrong_streak: int = 0
+    confidence: float = 0.0
+
+
+@app.post("/intervention")
+def intervention(r: Intervention):
+    """Use the trained classifier confidence and learner outcome to select intervention intensity."""
+    confidence = max(0.0, min(1.0, r.confidence))
+    if r.correct and confidence >= 0.7:
+        target = {"Beginner": "Intermediate", "Intermediate": "Advanced", "Advanced": "Advanced"}.get(
+            r.current_difficulty, r.current_difficulty
+        )
+    else:
+        target = {"Advanced": "Intermediate", "Intermediate": "Beginner", "Beginner": "Beginner"}.get(
+            r.current_difficulty, r.current_difficulty
+        )
+    explanation_level = "standard"
+    if r.wrong_streak >= 3:
+        explanation_level = "very_simple"
+    elif r.wrong_streak >= 2:
+        explanation_level = "simple"
+    return {"target_difficulty": target, "explanation_level": explanation_level}
+
+
 @app.post("/submit")
 def submit(r: Submit):
     """Right/wrong via unit tests; if wrong, ask the model WHY (misconception)."""
@@ -115,6 +142,13 @@ def submit(r: Submit):
     if len(r.code) > 5000:
         raise HTTPException(413, "code too long")
     result = problems.run_tests(r.problem_id, r.code)
+    problem = problems.BANK[r.problem_id]
+    result["category"] = problem["category"]
+    result["difficulty"] = (
+        "Advanced" if problem["n_tests"] >= 8
+        else "Intermediate" if problem["n_tests"] >= 4
+        else "Beginner"
+    )
     result["diagnosis"] = None
     if not result["correct"] and not result["syntax"]:
         result["diagnosis"] = diagnose(Req(code=r.code))

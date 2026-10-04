@@ -4,6 +4,8 @@ import LivePage from './LivePage.jsx'
 import Login from './Login.jsx'
 import Signup from './Signup.jsx'
 import McqPage from './McqPage.jsx'
+import ProfilePage from './ProfilePage.jsx'
+import AdminPage from './AdminPage.jsx'
 
 /* ---------- content ---------- */
 const NAV = [['Home', '#top'], ['How it works', '#how'], ['Preview', '#demo'], ['FAQ', '#faq']]
@@ -279,6 +281,8 @@ export default function App() {
   const login = route === '/login'
   const signup = route === '/signup'
   const mcq = route === '/mcq' || route === '/quiz'
+  const profile = route === '/profile'
+  const admin = route === '/admin'
   let session = null
   try {
     session = JSON.parse(localStorage.getItem('relearn-session') || 'null')
@@ -287,11 +291,11 @@ export default function App() {
   }
 
   useEffect(() => {
-    if ((live || mcq) && !session?.token) window.location.hash = '#/login'
-  }, [live, mcq, session?.token])
+    if ((live || mcq || profile || admin) && !session?.token) window.location.hash = '#/login'
+  }, [live, mcq, profile, admin, session?.token])
 
   useEffect(() => {
-    if (live || login || signup || mcq) { window.scrollTo(0, 0); return }
+    if (live || login || signup || mcq || profile || admin) { window.scrollTo(0, 0); return }
     if (hash.length > 1 && !hash.startsWith('#/')) {          // landing section anchors after coming back
       setTimeout(() => document.querySelector(hash)?.scrollIntoView(), 0)
     } else window.scrollTo(0, 0)
@@ -302,6 +306,14 @@ export default function App() {
   if (mcq) {
     if (!session?.token) return <Login onSwitch={() => { window.location.hash = '#/signup' }} onSuccess={() => { window.location.hash = '#/mcq' }} onBack={goHome} />
     return <McqPage />
+  }
+  if (profile) {
+    if (!session?.token) return <Login onSwitch={() => { window.location.hash = '#/signup' }} onSuccess={() => { window.location.hash = '#/profile' }} onBack={goHome} />
+    return <ProfilePage />
+  }
+  if (admin) {
+    if (!session?.token) return <Login onSwitch={() => { window.location.hash = '#/signup' }} onSuccess={() => { window.location.hash = '#/admin' }} onBack={goHome} />
+    return <AdminPage />
   }
   if (login) return <Login onSwitch={() => { window.location.hash = '#/signup' }} onSuccess={goLive} onBack={goHome} />
   if (signup) return <Signup onSwitch={() => { window.location.hash = '#/login' }} onSuccess={goLive} onBack={goHome} />
