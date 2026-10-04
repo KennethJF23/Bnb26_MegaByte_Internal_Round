@@ -36,3 +36,23 @@ export const submitCode = (problem_id, code) =>
     headers: { 'Content-Type': 'application/json', ...authHeaders() },
     body: JSON.stringify({ problem_id, code }),
   })
+
+export const getProgress = () =>
+  call('/api/ml/progress', { headers: authHeaders() })
+
+export const recordMcqAttempt = (attempt) =>
+  call('/api/ml/progress/mcq', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', ...authHeaders() },
+    body: JSON.stringify(attempt),
+  })
+
+export const getIntervention = (input) =>
+  call('/api/ml/intervention', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', ...authHeaders() },
+    body: JSON.stringify(input),
+  })
+
+export const getAdminDashboard = () =>
+  call('/api/admin/dashboard', { headers: authHeaders() })

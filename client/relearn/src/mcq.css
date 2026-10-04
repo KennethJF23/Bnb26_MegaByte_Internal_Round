@@ -1139,6 +1139,15 @@
   flex-direction: column;
   gap: 14px;
   transition: all 0.2s ease;
+  min-width: 0;
+  overflow: hidden;
+}
+
+.mcq-catalog-card .mcq-btn {
+  box-sizing: border-box;
+  width: 100%;
+  max-width: 100%;
+  flex-shrink: 0;
 }
 
 .mcq-catalog-card:hover {

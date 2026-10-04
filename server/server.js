@@ -10,6 +10,7 @@ app.use(express.json());
 
 app.use("/api/auth",require("./routes/auth.routes"))
 app.use("/api/ml", require("./routes/ml.routes"));
+app.use("/api/admin", require("./routes/admin.routes"));
 
 app.get('/',(req,res)=>{
     res.send("Homepage is working");

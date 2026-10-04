@@ -1,5 +1,6 @@
 import { useState, useEffect, useMemo, useRef } from 'react'
 import { MCQ_BANK } from './data/mcqQuestions.js'
+import { getIntervention, recordMcqAttempt } from './api.js'
 import './mcq.css'
 
 const CATEGORIES = [
@@ -28,6 +29,14 @@ export default function McqPage() {
     }
   })
 
+  const [attemptHistory, setAttemptHistory] = useState(() => {
+    try {
+      return JSON.parse(localStorage.getItem('relearn_mcq_attempt_history') || '{}')
+    } catch {
+      return {}
+    }
+  })
+
   const [flagged, setFlagged] = useState(() => {
     try {
       return JSON.parse(localStorage.getItem('relearn_mcq_flagged') || '{}')
@@ -45,6 +54,8 @@ export default function McqPage() {
   // Active Question Tracking
   const [currentIndex, setCurrentIndex] = useState(0)
   const [copied, setCopied] = useState(false)
+  const [feedbackVisible, setFeedbackVisible] = useState(false)
+  const [interventionLevels, setInterventionLevels] = useState({})
 
   // Assessment / Timed Exam Mode State
   const [examStarted, setExamStarted] = useState(false)
@@ -61,6 +72,10 @@ export default function McqPage() {
   useEffect(() => {
     localStorage.setItem('relearn_mcq_flagged', JSON.stringify(flagged))
   }, [flagged])
+
+  useEffect(() => {
+    localStorage.setItem('relearn_mcq_attempt_history', JSON.stringify(attemptHistory))
+  }, [attemptHistory])
 
   // Filtered Questions list for Practice Mode
   const filteredQuestions = useMemo(() => {
@@ -151,10 +166,104 @@ export default function McqPage() {
   // Handle Option Selection
   const handleSelectOption = (optIdx) => {
     if (!activeQuestion) return
+    setFeedbackVisible(true)
+    const previousAnswer = answers[activeQuestion.id]
     setAnswers((prev) => ({
       ...prev,
       [activeQuestion.id]: optIdx,
     }))
+    if (previousAnswer !== optIdx) {
+      const wrongStreak = optIdx === activeQuestion.correct
+        ? 0
+        : (attemptHistory[activeQuestion.id] || []).reduceRight(
+          (streak, attempt) => (attempt.correct ? 0 : streak + 1), 0,
+        ) + 1
+      getIntervention({
+        current_difficulty: activeQuestion.difficulty,
+        correct: optIdx === activeQuestion.correct,
+        wrong_streak: wrongStreak,
+        confidence: optIdx === activeQuestion.correct ? 1 : 0,
+      }).then((data) => setInterventionLevels((prev) => ({
+        ...prev, [activeQuestion.id]: data.explanation_level,
+      }))).catch((error) => console.error('Could not load intervention:', error))
+      recordMcqAttempt({
+        questionId: activeQuestion.id,
+        topic: activeQuestion.category,
+        difficulty: activeQuestion.difficulty,
+        correct: optIdx === activeQuestion.correct,
+      }).catch((error) => console.error('Could not sync MCQ attempt:', error))
+      setAttemptHistory((prev) => ({
+        ...prev,
+        [activeQuestion.id]: [
+          ...(prev[activeQuestion.id] || []),
+          {
+            answer: optIdx,
+            correct: optIdx === activeQuestion.correct,
+          },
+        ],
+      }))
+    }
+  }
+
+  const getNextAdaptiveIndex = async () => {
+    if (!activeQuestion || activeQuestionList.length < 2) return currentIndex
+
+    const latestCorrect = answers[activeQuestion.id] === activeQuestion.correct
+    let targetDifficulty = activeQuestion.difficulty
+    try {
+      const intervention = await getIntervention({
+        current_difficulty: activeQuestion.difficulty,
+        correct: latestCorrect,
+        wrong_streak: 0,
+        confidence: latestCorrect ? 1 : 0,
+      })
+      targetDifficulty = intervention.target_difficulty
+    } catch (error) {
+      console.error('Could not load adaptive intervention:', error)
+    }
+    const listLength = activeQuestionList.length
+    const allCandidates = activeQuestionList
+      .map((question, index) => ({ question, index }))
+      .filter(({ index }) => index !== currentIndex)
+    const forwardCandidates = allCandidates.filter(({ index }) => index > currentIndex)
+    const candidates = (forwardCandidates.length ? forwardCandidates : allCandidates)
+      .sort((a, b) => {
+        const aAnswered = answers[a.question.id] !== undefined
+        const bAnswered = answers[b.question.id] !== undefined
+        const aForwardDistance = (a.index - currentIndex + listLength) % listLength
+        const bForwardDistance = (b.index - currentIndex + listLength) % listLength
+        return Number(aAnswered) - Number(bAnswered) ||
+          Number(a.question.difficulty !== targetDifficulty) -
+          Number(b.question.difficulty !== targetDifficulty) ||
+          aForwardDistance - bForwardDistance
+      })
+
+    return candidates[0]?.index ?? currentIndex
+  }
+
+  const goToNextQuestion = () => {
+    setFeedbackVisible(true)
+    if (mode === 'practice') {
+      getNextAdaptiveIndex().then(setCurrentIndex)
+    } else {
+      setCurrentIndex((i) => i + 1)
+    }
+  }
+
+  const getExplanation = (question) => {
+    const attempts = attemptHistory[question.id] || []
+    const wrongStreak = attempts.reduceRight(
+      (streak, attempt) => (attempt.correct ? 0 : streak + 1),
+      0,
+    )
+    const level = interventionLevels[question.id]
+    if (level === 'very_simple' && question.misconception) {
+      return `Let's make it very simple: ${question.misconception} The correct rule is: ${question.takeaway}`
+    }
+    if (level === 'simple' && question.misconception) {
+      return `Let's simplify it: ${question.misconception} Remember: ${question.takeaway}`
+    }
+    return question.explanation
   }
 
   // Toggle Flag
@@ -168,6 +277,7 @@ export default function McqPage() {
   // Clear current question answer
   const clearCurrentAnswer = () => {
     if (!activeQuestion) return
+    setFeedbackVisible(false)
     setAnswers((prev) => {
       const copy = { ...prev }
       delete copy[activeQuestion.id]
@@ -180,8 +290,10 @@ export default function McqPage() {
     if (window.confirm('Reset all answers and progress across the 100 MCQs?')) {
       setAnswers({})
       setFlagged({})
+      setAttemptHistory({})
       localStorage.removeItem('relearn_mcq_answers')
       localStorage.removeItem('relearn_mcq_flagged')
+      localStorage.removeItem('relearn_mcq_attempt_history')
     }
   }
 
@@ -200,8 +312,11 @@ export default function McqPage() {
       if (['INPUT', 'TEXTAREA'].includes(e.target.tagName)) return
 
       if (e.key === 'ArrowRight' || e.key === 'n') {
-        if (currentIndex < activeQuestionList.length - 1) {
-          setCurrentIndex((i) => i + 1)
+        if (
+          mode === 'practice' ||
+          currentIndex < activeQuestionList.length - 1
+        ) {
+          goToNextQuestion()
         }
       } else if (e.key === 'ArrowLeft' || e.key === 'p') {
         if (currentIndex > 0) {
@@ -219,7 +334,7 @@ export default function McqPage() {
 
     window.addEventListener('keydown', handleKeyDown)
     return () => window.removeEventListener('keydown', handleKeyDown)
-  }, [currentIndex, activeQuestionList.length, activeQuestion])
+  }, [currentIndex, activeQuestionList.length, activeQuestion, mode])
 
   // Exam Mode timer
   useEffect(() => {
@@ -265,7 +380,10 @@ export default function McqPage() {
     return `${mins}:${secs < 10 ? '0' : ''}${secs}`
   }
 
-  const selectedAnswer = activeQuestion ? answers[activeQuestion.id] : undefined
+  const selectedAnswer =
+    (mode === 'assessment' || feedbackVisible) && activeQuestion
+      ? answers[activeQuestion.id]
+      : undefined
   const hasAnswered = selectedAnswer !== undefined
   const isCorrect = hasAnswered && selectedAnswer === activeQuestion?.correct
 
@@ -287,6 +405,9 @@ export default function McqPage() {
           <div className="mcq-nav-actions">
             <a href="#/live" className="btn sm white">
               ← Live Code Editor
+            </a>
+            <a href="#/profile" className="btn sm white">
+              My Profile
             </a>
             <a href="#top" className="btn sm">
               Home
@@ -609,7 +730,7 @@ export default function McqPage() {
 
                       {/* Explanation of the runtime behavior */}
                       <div className="mcq-diag-body">
-                        <p>{activeQuestion.explanation}</p>
+                        <p>{getExplanation(activeQuestion)}</p>
                       </div>
 
                       {/* Distractor Rationale for Every Option */}
@@ -648,16 +769,25 @@ export default function McqPage() {
                       <button
                         className="mcq-btn secondary"
                         disabled={currentIndex === 0}
-                        onClick={() => setCurrentIndex((i) => i - 1)}
+                        onClick={() => {
+                          setFeedbackVisible(true)
+                          setCurrentIndex((i) => i - 1)
+                        }}
                       >
                         ← Previous
                       </button>
                       <button
                         className="mcq-btn primary"
-                        disabled={currentIndex === activeQuestionList.length - 1}
-                        onClick={() => setCurrentIndex((i) => i + 1)}
+                        disabled={
+                          mode === 'assessment'
+                            ? currentIndex === activeQuestionList.length - 1
+                            : activeQuestionList.length < 2
+                        }
+                        onClick={() => {
+                          goToNextQuestion()
+                        }}
                       >
-                        Next Question →
+                        {mode === 'practice' ? 'Next Adaptive Question →' : 'Next Question →'}
                       </button>
                     </div>
 
@@ -760,7 +890,10 @@ export default function McqPage() {
                       <button
                         key={q.id}
                         className={`mcq-pal-btn ${btnClass}`}
-                        onClick={() => setCurrentIndex(idx)}
+                        onClick={() => {
+                          setFeedbackVisible(true)
+                          setCurrentIndex(idx)
+                        }}
                         title={`Q${idx + 1}: ${q.title}`}
                       >
                         {idx + 1}
